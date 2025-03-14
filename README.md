@@ -40,11 +40,6 @@ python main.py
 {
   "yuketang": {
     "domain": "changjiang.yuketang.cn",          // 长江雨课堂域名（默认）
-    "classroomWhiteList": [],                    // 白名单课程（完全匹配）
-    "clashroomBlackList": ["课程名1"],            // 黑名单课程
-    "clashroomStartTimeDict": {                  // 课程签到时间限制（周1-7对应周一到周日）
-      "课程名": {"1": "08:30", "3": "14:00"}
-    },
     "an": false,                                 // 自动答题开关
     "ppt": false,                                // 自动下载PPT开关
     "si": false,                                 // PPT进度推送开关
@@ -63,7 +58,6 @@ python main.py
 | 参数名                  | 类型    | 说明                                                                 |
 |-------------------------|---------|--------------------------------------------------------------------|
 | `domain`                | String  | 长江雨课堂域名 `changjiang.yuketang.cn` |
-| `clashroomStartTimeDict`| Object  | 课程签到时间限制（示例：`"课程名": {"1": "08:30"}`）                       |
 | `an`                    | Boolean | 启用自动答题（需多人共享答案库）                                        |
 | `ppt`                   | Boolean | 自动下载PPT并生成PDF                                                    |
 | `si`                    | Boolean | 实时推送PPT当前页码（需谨慎使用，避免消息轰炸）                          |
@@ -108,9 +102,7 @@ python main.py
    }
    ```
 
----
-
-## 📊 关键配置参数
+### 📊 推送平台限制
 | 推送方式 | 消息限制 (`msgLimit`) | 文件限制 (`dataLimit`) |
 |----------|----------------------|----------------------|
 | 企业微信 (`wx`) | 500 字符              | 20MB (20971520)       |

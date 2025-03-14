@@ -28,19 +28,26 @@ class yuketang:
         self.openId = openId
         self.cookie = ''
         self.cookie_time = ''
+
         self.lessonIdNewList = []
         self.lessonIdDict = {}
-        self.classroomWhiteList = yt_config['classroomWhiteList']
-        self.clashroomBlackList = yt_config['clashroomBlackList']
-        self.clashroomStartTimeDict = yt_config['clashroomStartTimeDict']
         self.wx = yt_config['wx']
         self.dd = yt_config['dd']
         self.fs = yt_config['fs']
         self.an = yt_config['an']
         self.ppt = yt_config['ppt']
         self.si = yt_config['si']
+        self.cookie_time = None
+        self.config = self.load_config()
+        self.cookie_valid_reminder_sent = False
+        self.enable_ai = self.config['yuketang'].get('enable_ai', False)
         self.msgmgr = SendManager(openId=self.openId, wx=self.wx, dd=self.dd, fs=self.fs)
-        self.last_reminder_time = None
+
+    def load_config(self):
+        current_dir = os.path.dirname(__file__)
+        os.chdir(current_dir)
+        with open('config.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
 
     # 自动获取和维护用户Cookie
     async def getcookie(self):
@@ -76,19 +83,15 @@ class yuketang:
         if code == 0 and self.cookie_time:
             remaining = (self.cookie_time - dt.now(tz)).total_seconds()
             if remaining > 0:
-                remaining_str = self.seconds_to_readable(remaining)
-                self.msgmgr.sendMsg(f"Cookie有效，剩余时间：{remaining_str}")
+                if not self.cookie_valid_reminder_sent:  # 使用统一变量名
+                    remaining_str = self.seconds_to_readable(remaining)
+                    self.msgmgr.sendMsg(f"Cookie有效，剩余时间：{remaining_str}")
+                    self.cookie_valid_reminder_sent = True  # 正确设置
 
-                # 计算剩余时间是否不足一天
-                if remaining < 86400:
-                    now = dt.now(tz)
-                    # 检查是否需要触发提醒
-                    if (self.last_reminder_time is None or
-                        (now - self.last_reminder_time).total_seconds() >= 3600):
-                        self.msgmgr.sendMsg("Cookie将在24小时内过期，请注意及时刷新")
-                        self.last_reminder_time = now
-                else:
-                    self.last_reminder_time = None  # 重置提醒标记
+                # 仅在未发送过提醒且剩余时间不足一天时触发
+                if remaining < 86400 and not self.cookie_reminder_sent:
+                    self.msgmgr.sendMsg("Cookie将在24小时内过期，请注意及时刷新")
+                    self.cookie_reminder_sent = True  # 标记已发送
 
     # 输入与时间差计算 和 分解时间单位
     def seconds_to_readable(self, seconds):
@@ -107,7 +110,7 @@ class yuketang:
             parts.append(f"{seconds + 0.5:.0f}秒")  # 四舍五入
         return " ".join(parts)
 
-    #   向服务器发送登录请求，携带用户凭证
+    # 向服务器发送登录请求，携带用户凭证
     def weblogin(self, UserID, Auth):
         url = f"https://{domain}/pc/web_login"
         data = {
@@ -136,6 +139,7 @@ class yuketang:
             content = self.cookie
         with open(f"{self.name}cookie", "w") as f:
             f.write(content)
+        self.cookie_time = convert_date(int(date))
 
     # 验证Cookie有效性
     def check_cookie(self):
@@ -189,6 +193,7 @@ class yuketang:
             self.lessonIdDict[lessonId][
                 'header'] = f"课程: {classroomName}\n标题: 获取失败\n教师: 获取失败\n开始时间: 获取失败"
 
+    # 获取当前进行中的课程列表
     def getlesson(self):
         url = f"https://{domain}/api/v3/classroom/on-lesson-upcoming-exam"
         headers = {
@@ -208,11 +213,7 @@ class yuketang:
                 self.lessonIdDict = {}
                 return False
             for item in online_data['data']['onLessonClassrooms']:
-                if (self.classroomWhiteList and item['courseName'] not in self.classroomWhiteList) or item[
-                    'courseName'] in self.clashroomBlackList or (self.clashroomStartTimeDict and item[
-                    'courseName'] in self.clashroomStartTimeDict and not check_time2(
-                        self.clashroomStartTimeDict[item['courseName']])):
-                    continue
+                # 移除所有过滤条件
                 lessonId = item['lessonId']
                 if lessonId not in self.lessonIdDict:
                     self.lessonIdNewList.append(lessonId)
@@ -234,8 +235,10 @@ class yuketang:
         except Exception as e:
             return False
 
+    # 课程签到功能
     def lesson_checkin(self):
         for lessonId in self.lessonIdNewList:
+            # 1. 发送签到请求
             url = f"https://{domain}/api/v3/lesson/checkin"
             headers = {
                 "referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
@@ -248,97 +251,34 @@ class yuketang:
                 "lessonId": lessonId
             }
             try:
-                res = requests.post(url=url, headers=headers, json=data, timeout=timeout)
+                res = requests.post(url, headers=headers, json=data, timeout=timeout)
             except Exception as e:
-                return
-            self.setAuthorization(res, lessonId)
-            self.lesson_info(lessonId)
+                return  # 网络请求失败直接终止
+
+            # 2. 处理响应
+            self.setAuthorization(res, lessonId)  # 更新认证信息
+            self.lesson_info(lessonId)  # 获取课程详细信息
+
+            # 3. 解析响应数据
             try:
                 self.lessonIdDict[lessonId]['Auth'] = res.json()['data']['lessonToken']
                 self.lessonIdDict[lessonId]['userid'] = res.json()['data']['identityId']
             except Exception as e:
+                # 数据解析失败时设置默认值
                 self.lessonIdDict[lessonId]['Auth'] = ''
                 self.lessonIdDict[lessonId]['userid'] = ''
-            checkin_status = res.json()['msg']
+
+            # 4. 判断签到结果
+            checkin_status = res.json().get('msg', '')
             if checkin_status == 'OK':
+                # 签到成功
                 self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 签到成功")
             elif checkin_status == 'LESSON_END':
+                # 课程已结束
                 self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 课程已结束")
             else:
+                # 其他异常情况
                 self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 签到失败")
-
-    def fetch_problems(self, lessonId):
-        url = f"https://{domain}/api/v3/lesson/presentation/fetch?presentation_id={self.lessonIdDict[lessonId]['presentation']}"
-        headers = {
-            "referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-            "cookie": self.cookie,
-            "Authorization": self.lessonIdDict[lessonId]['Authorization']
-        }
-        res = requests.get(url, headers=headers, timeout=timeout)
-        self.setAuthorization(res, lessonId)
-        info = res.json()
-        slides = info['data']['slides']  #获得幻灯片列表
-        for slide in slides:
-            if slide['id'] == self.lessonIdDict[lessonId]['problemId']:
-                if slide.get("problem") is not None:
-                    self.lessonIdDict[lessonId]['problems'][slide['id']] = slide['problem']
-                    self.lessonIdDict[lessonId]['problems'][slide['id']]['index'] = slide['index']
-                    if slide['problem']['body'] == '':
-                        shapes = slide.get('shapes', [])
-                        if shapes:
-                            min_left_item = min(shapes, key=lambda item: item.get('Left', 9999999))
-                            if min_left_item != 9999999 and min_left_item.get('Text') is not None:
-                                self.lessonIdDict[lessonId]['problems'][slide['id']]['body'] = min_left_item['Text']
-                            else:
-                                self.lessonIdDict[lessonId]['problems'][slide['id']]['body'] = '未知问题'
-                        else:
-                            self.lessonIdDict[lessonId]['problems'][slide['id']]['body'] = '未知问题'
-
-                    shared_answer = yuketang.shared_answers.get(slide['id'])
-                    if shared_answer is not None:
-                        self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] = shared_answer
-                        self.msgmgr.sendMsg(
-                            f"问题: {self.lessonIdDict[lessonId]['problems'][slide['id']]['body']}\n检测到共享答案: {shared_answer}")
-                        # 跳过后续逻辑，直接使用共享答案
-                        break
-
-                    if self.lessonIdDict[lessonId]['problems'][slide['id']]['problemType'] == 5:
-                        if self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] in [[], None, 'null'] and not \
-                        self.lessonIdDict[lessonId]['problems'][slide['id']]['result'] in [[], None, 'null']:
-                            yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']][
-                                'result']
-                            self.msgmgr.sendMsg(
-                                f"问题: {self.lessonIdDict[lessonId]['problems'][slide['id']]['body']}\n答案:{yuketang.shared_answers[slide['id']]}已提交到共享区")
-                            self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] = yuketang.shared_answers[
-                                slide['id']]
-                            break
-                    elif self.lessonIdDict[lessonId]['problems'][slide['id']]['problemType'] == 4:
-                        num_blanks = len(self.lessonIdDict[lessonId]['problems'][slide['id']]['blanks'])
-                        if not check_answers_in_blanks(self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'],
-                                                       num_blanks):
-                            if check_answers_in_blanks(self.lessonIdDict[lessonId]['problems'][slide['id']]['result'],
-                                                       num_blanks):
-                                yuketang.shared_answers[slide['id']] = \
-                                self.lessonIdDict[lessonId]['problems'][slide['id']]['result']
-                                self.msgmgr.sendMsg(
-                                    f"问题: {self.lessonIdDict[lessonId]['problems'][slide['id']]['body']}\n答案:{yuketang.shared_answers[slide['id']]}已提交到共享区")
-                                self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] = \
-                                yuketang.shared_answers[slide['id']]
-                                break
-                    else:
-                        if not check_answers_in_options(self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'],
-                                                        self.lessonIdDict[lessonId]['problems'][slide['id']][
-                                                            'options']) and check_answers_in_options(
-                                self.lessonIdDict[lessonId]['problems'][slide['id']]['result'],
-                                self.lessonIdDict[lessonId]['problems'][slide['id']]['options']):
-                            yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']][
-                                'result']
-                            self.msgmgr.sendMsg(
-                                f"问题: {self.lessonIdDict[lessonId]['problems'][slide['id']]['body']}\n答案:{yuketang.shared_answers[slide['id']]}已提交到共享区")
-                            self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] = yuketang.shared_answers[
-                                slide['id']]
-                            break
 
     def fetch_presentation(self, lessonId):
         url = f"https://{domain}/api/v3/lesson/presentation/fetch?presentation_id={self.lessonIdDict[lessonId]['presentation']}"
@@ -696,9 +636,124 @@ class yuketang:
         asyncio.gather(*tasks)
         self.lessonIdNewList = []
 
+    # 获取课程问题 & 题型判断
+    def fetch_problems(self, lessonId):
+        url = f"https://{domain}/api/v3/lesson/presentation/fetch?presentation_id={self.lessonIdDict[lessonId]['presentation']}"
+        headers = {
+            "referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
+            "User-Agent": "Mozilla/5.0 ...",
+            "cookie": self.cookie,
+            "Authorization": self.lessonIdDict[lessonId]['Authorization']
+        }
+        res = requests.get(url, headers=headers, timeout=timeout)
+        self.setAuthorization(res, lessonId)
+        info = res.json()
+        slides = info['data']['slides']
+
+        for slide in slides:
+            if slide['id'] == self.lessonIdDict[lessonId]['problemId']:
+                if slide.get("problem") is not None:
+                    problem = slide['problem']
+                    problem['index'] = slide['index']
+
+                    # 处理问题正文缺失
+                    if problem['body'] == '':
+                        shapes = slide.get('shapes', [])
+                        if shapes:
+                            min_left_item = min(shapes, key=lambda item: item.get('Left', 9999999))
+                            problem['body'] = min_left_item.get('Text', '未知问题')
+                        else:
+                            problem['body'] = '未知问题'
+
+                    # 根据题型和开关决定是否调用AI
+                    question_type = problem.get('problemType', 0)
+                    if not self.enable_ai:  # 如果开关关闭
+                        problem['answers'] = []
+                        self.msgmgr.sendMsg("AI答题功能已关闭，跳过答题")
+                        break
+                    else:
+                        if question_type == 4:  # 填空题：不使用AI
+                            problem['answers'] = []
+                            self.msgmgr.sendMsg("填空题：暂时不支持AI答题")
+                            break
+                        elif question_type == 5:  # 单选题：调用AI
+                            ai_answer = self.get_answer_from_ai(problem, lessonId, is_multiple=False)
+                            if ai_answer:
+                                problem['answers'] = [ai_answer]
+                                self.msgmgr.sendMsg(f"单选题答案：{ai_answer} 已提交")
+                                break
+                        elif question_type == 6:  # 多选题：调用AI
+                            ai_answer = self.get_answer_from_ai(problem, lessonId, is_multiple=True)
+                            if ai_answer:
+                                problem['answers'] = ai_answer
+                                self.msgmgr.sendMsg(f"多选题答案：{','.join(ai_answer)} 已提交")
+                                break
+                        else:  # 其他题型：默认调用AI
+                            ai_answer = self.get_answer_from_ai(problem, lessonId)
+                            if ai_answer:
+                                problem['answers'] = [ai_answer]
+                                self.msgmgr.sendMsg(f"通用题型答案：{ai_answer} 已提交")
+                                break
+
+    # AI自动答题
+    def get_answer_from_ai(self, problem, lessonId, is_multiple=False):
+        if not self.enable_ai:  # 如果开关关闭，直接返回空答案
+            return None
+
+        question = problem.get('body', '未知问题')
+        options = problem.get('options', [])
+        question_type = problem.get('problemType', 0)
+
+        # 构造提示词
+        if question_type == 5:  # 单选题
+            prompt = f"题目：{question}\n选项：{options}\n请选择正确答案（仅回复选项字母，如A/B/C/D）："
+        elif question_type == 6:  # 多选题
+            prompt = f"题目：{question}\n选项：{options}\n请选择所有正确答案（用逗号分隔选项字母，如A,B,C）："
+        else:
+            prompt = f"问题类型：{question_type}\n题目：{question}\n请给出答案："
+
+        try:
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=self.config['yuketang']['dashscope_api_key'],
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+            )
+
+            completion = client.chat.completions.create(
+                model="qwq-plus-latest",
+                messages=[{"role": "user", "content": prompt}],
+                stream=True
+            )
+
+            answer = ""
+            for chunk in completion:
+                if hasattr(chunk.choices[0].delta, 'content'):
+                    answer += chunk.choices[0].delta.content
+
+            # 清洗答案
+            if question_type == 5:  # 单选题
+                answer = answer.strip().upper()[:1]
+                if answer in ["A", "B", "C", "D"]:
+                    return answer
+                else:
+                    return None
+            elif question_type == 6:  # 多选题
+                answers = answer.strip().upper().split(",")
+                valid_answers = []
+                for a in answers:
+                    a = a.strip()
+                    if a in ["A", "B", "C", "D", "E", "F"]:
+                        valid_answers.append(a)
+                return valid_answers if valid_answers else None
+            else:
+                return answer.strip()
+        except Exception as e:
+            self.msgmgr.sendMsg(f"AI调用失败: {str(e)}")
+            return None
+
 async def ykt_user(ykt):
+    await ykt.getcookie()
     while True:
-        await ykt.getcookie()
         if ykt.getlesson():
             ykt.lesson_checkin()
             await ykt.lesson_attend()

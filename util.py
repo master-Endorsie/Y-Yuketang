@@ -97,6 +97,7 @@ def images_to_pdf(folder, output_path):
 def convert_date(timestamp_ms):
     dt_obj = dt.fromtimestamp(timestamp_ms/1000, tz=dt_timezone.utc).astimezone(tz)
     return dt_obj  # 返回datetime对象而非字符串
+    self.cookie_time = convert_date(int(date))
 
 def check_time(target_dt, minutes):
     target_time_minus = target_dt - timedelta(minutes=minutes)

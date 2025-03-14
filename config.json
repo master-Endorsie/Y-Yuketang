@@ -1,19 +1,15 @@
 {
   "yuketang": {
     "domain": "changjiang.yuketang.cn",
-    "classroomWhiteList": [],
-    "clashroomBlackList": ["2023秋-机器学习-0", "2023清华实践"],
-    "clashroomStartTimeDict": {
-      "2023秋-机器学习-0": {"1": "08:00", "2": "13:30"},
-      "2023清华实践": {"1": "13:30"}
-    },
     "wx": false,
     "dd": false,
     "fs": false,
     "an": false,
-    "ppt": true,
+    "ppt": false,
     "si": false,
-    "timeout": 30
+     "enable_ai": false,
+    "timeout": 30,
+    "dashscope_api_key": "ds-XXXXXXXXXXXXXXXXXXXXXXXX"
   },
   "send": {
     "wx": {
