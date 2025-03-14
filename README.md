@@ -40,10 +40,10 @@ python main.py
     "clashroomStartTimeDict": {
       "课程名": {"1": "08:30", "3": "14:00"}                 // 课程签到时间限制（周1-7对应周一到周日）
     },
-    "an": false,                                            // 自动答题开关
-    "ppt": false,                                           // 自动下载PPT开关
-    "si": false,                                            // PPT进度推送开关
-    "timeout": 30                                           // API超时时间（秒）
+    "an": false,                                             // 自动答题开关
+    "ppt": false,                                            // 自动下载PPT开关
+    "si": false,                                             // PPT进度推送开关
+    "timeout": 30                                            // API超时时间（秒）
   },
   "users": [
     {"name": "user1", "openId": "OPENID1"},
