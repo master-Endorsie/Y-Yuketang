@@ -5,9 +5,9 @@ import re
 import shutil
 import qrcode
 import pytz
+from datetime import datetime as dt, timedelta, timezone as dt_timezone
 from PIL import Image
 from pyzbar.pyzbar import decode
-from datetime import datetime, timedelta
 from pytz import timezone
 from concurrent.futures import ThreadPoolExecutor
 
@@ -38,13 +38,16 @@ def download_qrcode(url, name):
     qr.add_data(barcode_url)
     qr.print_ascii(invert=True)
 
-def cookie_date(response):
-    set_cookie_str = response.headers.get('Set-Cookie', '')
-    expires_regex = re.compile(r'expires=([^;]+)')
-    expires_matches = expires_regex.findall(set_cookie_str)
-    expires_datetimes = [int(datetime.strptime(date_str, '%a, %d-%b-%Y %H:%M:%S GMT').replace(tzinfo=timezone('UTC')).timestamp() * 1000) for date_str in expires_matches]
-    nearest_expires = min(expires_datetimes, default=None)
-    return nearest_expires
+def cookie_date(expires_matches):
+    expires_datetimes = []
+    for date_str in expires_matches:
+        # 正确解析日期
+        parsed_date = dt.strptime(date_str, '%a, %d-%b-%Y %H:%M:%S GMT')
+        # 转换时区并计算时间戳
+        utc_time = parsed_date.replace(tzinfo=timezone.utc)
+        timestamp = int(utc_time.timestamp() * 1000)
+        expires_datetimes.append(timestamp)
+    return expires_datetimes
 
 def clear_folder(folder_path):
     try:
@@ -92,16 +95,12 @@ def images_to_pdf(folder, output_path):
     images[0].save(output_path, save_all=True, append_images=images[1:])
 
 def convert_date(timestamp_ms):
-    timestamp_s = timestamp_ms / 1000
-    dt = datetime.fromtimestamp(timestamp_s, tz=timezone('UTC')).astimezone(tz)
-    formatted_date = dt.strftime('%Y年%m月%d日%H时%M分%S秒')
-    return formatted_date
+    dt_obj = dt.fromtimestamp(timestamp_ms/1000, tz=dt_timezone.utc).astimezone(tz)
+    return dt_obj  # 返回datetime对象而非字符串
 
-def check_time(target_time_str, minutes):
-    """返回剩余时间（秒）"""
-    target_time = tz.localize(datetime.strptime(target_time_str, "%Y年%m月%d日%H时%M分%S秒"))
-    target_time_minus = target_time - timedelta(minutes=minutes)
-    current_time = datetime.now(tz)
+def check_time(target_dt, minutes):
+    target_time_minus = target_dt - timedelta(minutes=minutes)
+    current_time = dt.now(tz)
     remaining = (target_time_minus - current_time).total_seconds()
     return remaining
 

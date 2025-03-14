@@ -1,7 +1,6 @@
 {
   "yuketang": {
     "domain": "changjiang.yuketang.cn",
-    "classroomCodeList": ["JZOJ5C", "G84UAB"],
     "classroomWhiteList": [],
     "clashroomBlackList": ["2023秋-机器学习-0", "2023清华实践"],
     "clashroomStartTimeDict": {
@@ -12,7 +11,7 @@
     "dd": false,
     "fs": false,
     "an": false,
-    "ppt": false,
+    "ppt": true,
     "si": false,
     "timeout": 30
   },

@@ -4,6 +4,7 @@ import json
 import requests
 import os
 import time
+from datetime import datetime as dt, timedelta, timezone as dt_timezone
 import traceback
 from util import *
 from send import *
@@ -29,7 +30,6 @@ class yuketang:
         self.cookie_time = ''
         self.lessonIdNewList = []
         self.lessonIdDict = {}
-        self.classroomCodeList = yt_config['classroomCodeList']
         self.classroomWhiteList = yt_config['classroomWhiteList']
         self.clashroomBlackList = yt_config['clashroomBlackList']
         self.clashroomStartTimeDict = yt_config['clashroomStartTimeDict']
@@ -40,6 +40,7 @@ class yuketang:
         self.ppt = yt_config['ppt']
         self.si = yt_config['si']
         self.msgmgr = SendManager(openId=self.openId, wx=self.wx, dd=self.dd, fs=self.fs)
+        self.last_reminder_time = None
 
     # 自动获取和维护用户Cookie
     async def getcookie(self):
@@ -49,15 +50,17 @@ class yuketang:
                     lines = f.readlines()
                     self.cookie = lines[0].strip()
                     if len(lines) > 1:
-                        self.cookie_time = convert_date(int(lines[1].strip()))
+                        # 直接存储datetime对象
+                        self.cookie_time = dt.fromtimestamp(int(lines[1].strip())/1000, tz=tz)
             except Exception as e:
                 self.msgmgr.sendMsg(f"读取cookie失败: {str(e)}")
-                self.cookie = self.cookie_time = ''
+                self.cookie = ''
+                self.cookie_time = None
 
         read_cookie()
 
         # 检查 Cookie 是否过期
-        if not self.cookie_time or check_time(self.cookie_time, 0) <= 0:
+        if not self.cookie_time or (dt.now(tz) >= self.cookie_time):
             self.msgmgr.sendMsg("Cookie已失效，请重新扫码")
             await self.ws_controller(self.ws_login, retries=3, delay=10)
             read_cookie()
@@ -69,30 +72,42 @@ class yuketang:
             await self.ws_controller(self.ws_login, retries=3, delay=10)
             read_cookie()
 
-        # 仅在需要时输出日志
-        if code == 0:
-            remaining = check_time(self.cookie_time, 0)
+        # 新增提醒逻辑
+        if code == 0 and self.cookie_time:
+            remaining = (self.cookie_time - dt.now(tz)).total_seconds()
             if remaining > 0:
                 remaining_str = self.seconds_to_readable(remaining)
                 self.msgmgr.sendMsg(f"Cookie有效，剩余时间：{remaining_str}")
 
-    def seconds_to_readable(self, seconds):  # 正确参数：self + seconds
-        days, rem = divmod(seconds, 86400)
-        hours, rem = divmod(rem, 3600)
-        minutes, seconds = divmod(rem, 60)
+                # 计算剩余时间是否不足一天
+                if remaining < 86400:
+                    now = dt.now(tz)
+                    # 检查是否需要触发提醒
+                    if (self.last_reminder_time is None or
+                        (now - self.last_reminder_time).total_seconds() >= 3600):
+                        self.msgmgr.sendMsg("Cookie将在24小时内过期，请注意及时刷新")
+                        self.last_reminder_time = now
+                else:
+                    self.last_reminder_time = None  # 重置提醒标记
 
+    # 输入与时间差计算 和 分解时间单位
+    def seconds_to_readable(self, seconds):
+        delta = timedelta(seconds=seconds)  # 使用导入的timedelta
+        days = delta.days
+        hours, rem = divmod(delta.seconds, 3600)
+        minutes, seconds = divmod(rem, 60)
         parts = []
         if days > 0:
-            parts.append(f"{int(days)}天")
+            parts.append(f"{days}天")
         if hours > 0:
-            parts.append(f"{int(hours)}小时")
+            parts.append(f"{hours}小时")
         if minutes > 0:
-            parts.append(f"{int(minutes)}分钟")
+            parts.append(f"{minutes}分钟")
         if seconds > 0 or not parts:
-            parts.append(f"{int(seconds + 0.5)}秒")  # 四舍五入
-
+            parts.append(f"{seconds + 0.5:.0f}秒")  # 四舍五入
         return " ".join(parts)
 
+    #   向服务器发送登录请求，携带用户凭证
     def weblogin(self, UserID, Auth):
         url = f"https://{domain}/pc/web_login"
         data = {
@@ -122,42 +137,21 @@ class yuketang:
         with open(f"{self.name}cookie", "w") as f:
             f.write(content)
 
+    # 验证Cookie有效性
     def check_cookie(self):
-        info = self.get_basicinfo()
-        if not info:
-            return 2
-        if info.get("code") == 0:
-            return 0
-        return 1
+        info = self.get_basicinfo()  # 1. 获取用户基本信息
+        if not info:  # 2. 如果获取失败（如请求错误或无响应）
+            return 2  # 返回状态码2：无法验证（可能因网络问题或Cookie已失效）
+        if info.get("code") == 0:  # 3. 如果API返回code为0（通常表示成功）
+            return 0  # 返回状态码0：Cookie有效
+        return 1  # 返回状态码1：Cookie无效（但能收到非0的code响应）
 
+    # 将HTTP响应中的认证令牌保存到课程对应的会话数据中
     def setAuthorization(self, res, lessonId):
         if res.headers.get("Set-Auth") is not None:
             self.lessonIdDict[lessonId]['Authorization'] = "Bearer " + res.headers.get("Set-Auth")
 
-    def join_classroom(self):
-        url = f"https://{domain}/v/course_meta/join_classroom"
-        headers = {
-            "cookie": self.cookie,
-            "x-csrftoken": self.cookie.split("csrftoken=")[1].split(";")[0],
-            "Content-Type": "application/json"
-        }
-        classroomCodeList_del = []
-        for classroomCode in self.classroomCodeList:
-            data = {"id": classroomCode}
-            try:
-                res = requests.post(url=url, headers=headers, json=data, timeout=timeout)
-            except Exception as e:
-                return
-            if res.json().get("success", False) == True:
-                self.msgmgr.sendMsg(f"班级邀请码/课堂暗号{classroomCode}使用成功")
-                classroomCodeList_del.append(classroomCode)
-            elif "班级邀请码或课堂暗号不存在" in res.json().get("msg", ""):
-                self.msgmgr.sendMsg(f"班级邀请码/课堂暗号{classroomCode}不存在")
-                classroomCodeList_del.append(classroomCode)
-            # else:
-            #    self.msgmgr.sendMsg(f"班级邀请码/课堂暗号{classroomCode}使用失败")
-        self.classroomCodeList = list(set(self.classroomCodeList) - set(classroomCodeList_del))
-
+    # 用于获取用户基本信息
     def get_basicinfo(self):
         url = f"https://{domain}/api/v3/user/basic-info"
         headers = {
@@ -171,6 +165,7 @@ class yuketang:
         except Exception as e:
             return {}
 
+    # 课程基本信息获取方法
     def lesson_info(self, lessonId):
         url = f"https://{domain}/api/v3/lesson/basic-info"
         headers = {
@@ -704,7 +699,6 @@ class yuketang:
 async def ykt_user(ykt):
     while True:
         await ykt.getcookie()
-        ykt.join_classroom()
         if ykt.getlesson():
             ykt.lesson_checkin()
             await ykt.lesson_attend()
