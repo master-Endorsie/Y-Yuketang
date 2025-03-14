@@ -1,0 +1,18 @@
+# Python标准库，用于编写异步IO程序
+asyncio
+# PDF文档处理库
+PyPDF2
+# 时区处理库，提供准确的时区转换功能，实现datetime对象的时区感知计算
+pytz
+# 简单易用的HTTP库，封装了URL请求/响应处理，支持GET/POST等方法和会话管理
+requests
+# WebSocket协议实现库，支持基于WS协议的实时双向通信客户端/服务器开发
+websockets
+# 二维码生成库，可创建带自定义样式和纠错级别的二维码图像
+qrcode
+# 功能强大的图像处理库，支持图像打开/保存、格式转换和基本图像编辑操作
+Pillow
+# 条码解码库，可从图像文件中解码二维码、Code128等一维/二维条码信息
+pyzbar
+# 用于与OpenAI API进行交互的库，可进行文本生成、图像生成、语音合成等操作
+openai
