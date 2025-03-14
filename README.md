@@ -33,17 +33,17 @@ python main.py
 ```json
 {
   "yuketang": {
-    "domain": "changjiang.yuketang.cn",          // 长江雨课堂域名（默认）
-    "classroomCodeList": ["JZOJ5C", "G84UAB"],  // 班级邀请码/课堂暗号列表
-    "classroomWhiteList": [],             // 白名单课程（完全匹配）
-    "clashroomBlackList": ["课程名1"],    // 黑名单课程
+    "domain": "changjiang.yuketang.cn",                      // 长江雨课堂域名（默认）
+    "classroomCodeList": ["JZOJ5C", "G84UAB"],               // 班级邀请码/课堂暗号列表
+    "classroomWhiteList": [],                                // 白名单课程（完全匹配）
+    "clashroomBlackList": ["课程名1"],                       // 黑名单课程
     "clashroomStartTimeDict": {
       "课程名": {"1": "08:30", "3": "14:00"}  // 课程签到时间限制（周1-7对应周一到周日）
     },
-    "an": false,          // 自动答题开关
-    "ppt": false,         // 自动下载PPT开关
-    "si": false,          // PPT进度推送开关
-    "timeout": 30        // API超时时间（秒）
+    "an": false,                                            // 自动答题开关
+    "ppt": false,                                           // 自动下载PPT开关
+    "si": false,                                            // PPT进度推送开关
+    "timeout": 30                                           // API超时时间（秒）
   },
   "users": [
     {"name": "user1", "openId": "OPENID1"},
