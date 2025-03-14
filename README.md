@@ -33,7 +33,7 @@ python main.py
 ```json
 {
   "yuketang": {
-    "domain": "changjiang.yuketang.cn",          // 雨课堂域名（默认）
+    "domain": "changjiang.yuketang.cn",          // 长江雨课堂域名（默认）
     "classroomCodeList": ["JZOJ5C", "G84UAB"],  // 班级邀请码/课堂暗号列表
     "classroomWhiteList": [],             // 白名单课程（完全匹配）
     "clashroomBlackList": ["课程名1"],    // 黑名单课程
