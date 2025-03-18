@@ -58,7 +58,7 @@ class yuketang:
                     self.cookie = lines[0].strip()
                     if len(lines) > 1:
                         # 直接存储datetime对象
-                        self.cookie_time = dt.fromtimestamp(int(lines[1].strip())/1000, tz=tz)
+                        self.cookie_time = dt.fromtimestamp(int(lines[1].strip()) / 1000, tz=tz)
             except Exception as e:
                 self.msgmgr.sendMsg(f"读取cookie失败: {str(e)}")
                 self.cookie = ''
@@ -291,7 +291,7 @@ class yuketang:
         res = requests.get(url, headers=headers, timeout=timeout)
         self.setAuthorization(res, lessonId)
         info = res.json()
-        slides = info['data']['slides']  #获得幻灯片列表
+        slides = info['data']['slides']  # 获得幻灯片列表
         self.lessonIdDict[lessonId]['problems'] = {}
         self.lessonIdDict[lessonId]['covers'] = [slide['index'] for slide in slides if slide.get('cover') is not None]
         for slide in slides:
@@ -311,7 +311,7 @@ class yuketang:
 
                 if self.lessonIdDict[lessonId]['problems'][slide['id']]['problemType'] == 5:
                     if self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] in [[], None, 'null'] and not \
-                    self.lessonIdDict[lessonId]['problems'][slide['id']]['result'] in [[], None, 'null']:
+                            self.lessonIdDict[lessonId]['problems'][slide['id']]['result'] in [[], None, 'null']:
                         yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']][
                             'result']
                 elif self.lessonIdDict[lessonId]['problems'][slide['id']]['problemType'] == 4:
@@ -326,9 +326,9 @@ class yuketang:
                     if not check_answers_in_options(self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'],
                                                     self.lessonIdDict[lessonId]['problems'][slide['id']][
                                                         'options']) and check_answers_in_options(
-                            self.lessonIdDict[lessonId]['problems'][slide['id']]['result'],
-                            self.lessonIdDict[lessonId]['problems'][slide['id']]['options']) and not \
-                    self.lessonIdDict[lessonId]['problems'][slide['id']]['result'] in [[], None, 'null']:
+                        self.lessonIdDict[lessonId]['problems'][slide['id']]['result'],
+                        self.lessonIdDict[lessonId]['problems'][slide['id']]['options']) and not \
+                            self.lessonIdDict[lessonId]['problems'][slide['id']]['result'] in [[], None, 'null']:
                         yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']][
                             'result']
         if self.lessonIdDict[lessonId]['problems'] == {}:
@@ -337,6 +337,7 @@ class yuketang:
             self.msgmgr.sendMsg(
                 f"{self.lessonIdDict[lessonId]['header']}\n{format_json_to_text(self.lessonIdDict[lessonId]['problems'], self.lessonIdDict[lessonId].get('unlockedproblem', []))}")
         folder_path = lessonId
+        asyncio.create_task(self.download_presentation(slides, folder_path, lessonId))
 
         async def fetch_presentation_background():
             loop = asyncio.get_event_loop()
@@ -440,6 +441,17 @@ class yuketang:
             except Exception as e:
                 self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 连接断开")
                 break
+
+    async def download_presentation(self, slides, folder_path, lessonId):
+        await asyncio.get_event_loop().run_in_executor(None, clear_folder, folder_path)
+        await asyncio.get_event_loop().run_in_executor(None, download_images_to_folder, slides, folder_path)
+        output_pdf_path = os.path.join(folder_path,
+                                       f"{self.lessonIdDict[lessonId]['classroomName']}-{self.lessonIdDict[lessonId]['title']}.pdf")
+        await asyncio.get_event_loop().run_in_executor(None, images_to_pdf, folder_path, output_pdf_path)
+        if os.path.exists(output_pdf_path):
+            self.msgmgr.sendFile(output_pdf_path)
+        else:
+            self.msgmgr.sendMsg(f"PPT下载失败：未找到文件")
 
     async def receive_messages(self, lessonId):
         await self.pull_probleminfo(lessonId)
@@ -750,6 +762,7 @@ class yuketang:
         except Exception as e:
             self.msgmgr.sendMsg(f"AI调用失败: {str(e)}")
             return None
+
 
 async def ykt_user(ykt):
     await ykt.getcookie()
