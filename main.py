@@ -1,14 +1,57 @@
-# 1. 引入Python内置的异步编程库
 import asyncio
-# 2. 从自定义模块导入用户管理类
+import logging
+import sys
+import os
 from user_manager import UserManager
 
-if __name__ == "__main__":  # 3. 脚本入口判断
-    async def main():     # 4. 定义异步主函数
-        user_manager = UserManager()    # 5. 初始化用户管理器
-        
-        # 6. 启动用户管理任务（协程）
-        await user_manager.start_users()
 
-    # 使用 asyncio.run 来启动事件循环并运行主协程
-    asyncio.run(main())
+def setup_logging():
+    """配置日志记录"""
+    log_file = "Y-Yuketang.log"
+
+    # 确定日志路径：打包后使用可执行文件目录，否则使用当前目录
+    if getattr(sys, 'frozen', False):
+        log_dir = os.path.dirname(sys.executable)
+    else:
+        log_dir = os.getcwd()
+
+    log_path = os.path.join(log_dir, log_file)
+
+    # 配置日志格式（文件和控制台）
+    logging.basicConfig(
+        filename=log_path,
+        level=logging.DEBUG,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        filemode='w'  # 覆盖模式，每次运行清空日志
+    )
+    # 添加控制台输出（显示错误信息）
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.ERROR)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logging.getLogger().addHandler(console_handler)
+
+
+async def main():
+    """主异步函数"""
+    user_manager = UserManager()
+    await user_manager.start_users()
+
+
+if __name__ == "__main__":
+    try:
+        setup_logging()
+        logging.info("程序启动...")
+
+        # 运行异步主函数，并捕获所有异常
+        asyncio.run(main())
+
+    except Exception as e:
+        logging.exception("程序发生致命错误！")
+        logging.error(f"错误类型: {type(e).__name__}")
+        logging.error(f"错误信息: {str(e)}")
+
+        # 防止窗口立即关闭，提示用户查看日志
+        print("\n程序已崩溃！请查看日志文件：")
+        print(f"日志路径：{os.path.abspath('yuketang-autobot.log')}")
+        input("按任意键退出...")
