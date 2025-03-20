@@ -1,19 +1,15 @@
-import asyncio
 import logging
-import self
 import websockets
+import re
+import asyncio
+from websockets.exceptions import ConnectionClosed
+from util import *
+from send import *
 import json
 import requests
 import os
-import asyncio
-import re
 import time
-from websockets.exceptions import ConnectionClosed
-from datetime import datetime as dt, timedelta, timezone as dt_timezone
-import traceback
-from util import *
-from send import *
-from random import *
+from datetime import datetime as dt, timedelta, datetime
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(current_dir)
@@ -22,10 +18,15 @@ with open('config.json', 'r', encoding='utf-8') as f:
 
 yt_config = config['yuketang']
 timeout = yt_config['timeout']
-domain = yt_config['domain']
 
 
 class yuketang:
+    @staticmethod
+    def format_time(dt_obj):
+        weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        weekday = weekdays[dt_obj.weekday()]
+        return f"{dt_obj.day}号 {weekday} {dt_obj.hour:02d}:{dt_obj.minute:02d}:{dt_obj.second:02d}"
+
     shared_answers = {}
 
     # 发送课程状态消息
@@ -35,16 +36,19 @@ class yuketang:
     def __init__(self, name, openId) -> None:
         self.name = name
         self.openId = openId
+        self.config = self.load_config()
+        yt_config = self.config.get('yuketang', {})
+        self.domain = yt_config.get('domain')  # 新增声明
+        self.first_run = yt_config.get('first_run', True)
         self.cookie = ''
         self.lessonIdNewList = []
         self.lessonIdDict = {}
 
         # 新增配置项声明
-        self.domain = yt_config.get('domain')
         self.timeout = yt_config.get('timeout')
 
         # 配置项安全获取（使用循环简化）
-        config_keys = ['wx', 'dd', 'fs', 'an', 'ppt', 'si']
+        config_keys = ['wx', 'an', 'ppt', 'si']
         for key in config_keys:
             setattr(self, key, yt_config.get(key))
 
@@ -56,29 +60,67 @@ class yuketang:
 
         self.cookie_time = None
         self.lock = asyncio.Lock()
-        self.config = self.load_config()
         self.cookie_valid_reminder_sent = False
         self.enable_ai = self.config.get('yuketang', {}).get('enable_ai', False)
         self.msgmgr = SendManager(
             openId=self.openId,
-            wx=self.wx,
-            dd=self.dd,
-            fs=self.fs
+            wx=self.wx
         )
 
     # 获取当前文件的绝对路径，并构造配置文件的完整路径
     def load_config(self):
-
         current_dir = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.join(current_dir, 'config.json')
 
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except FileNotFoundError as e:
-            raise Exception(f"配置文件 {config_path} 未找到") from e
+                config = json.load(f)
+        except FileNotFoundError:
+            config = {}
         except json.JSONDecodeError as e:
             raise Exception(f"配置文件 {config_path} 格式错误：{str(e)}") from e
+
+        # 确保yuketang配置存在
+        config['yuketang'] = config.get('yuketang', {})
+        yt_config = config['yuketang']
+
+        # 检查是否是第一次运行
+        if yt_config.get('first_run', True):  # 如果未选择过域名
+            print("请选择平台域名：")
+            print("1. 雨课堂(yuketang.cn)")
+            print("2. 荷塘雨课堂(pro.yuketang.cn)")
+            print("3. 长江雨课堂(changjiang.yuketang.cn)")
+            print("4. 黄河雨课堂(huanghe.yuketang.cn)")
+
+            while True:
+                choice = input("请输入选项数字（1-4）：").strip()
+                if choice in ['1', '2', '3', '4']:
+                    break
+                print("输入无效，请重新选择！")
+
+            domains = {
+                '1': 'www.yuketang.cn',
+                '2': 'pro.yuketang.cn',
+                '3': 'changjiang.yuketang.cn',
+                '4': 'huanghe.yuketang.cn'
+            }
+
+            selected_domain = domains.get(choice)
+            if selected_domain:
+                # 更新配置
+                yt_config['domain'] = selected_domain
+                yt_config['first_run'] = False  # 关键：标记为已选择
+                # 保存配置
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, ensure_ascii=False, indent=4)
+                print("域名选择成功！")
+            else:
+                raise ValueError("域名选择无效，请重新运行程序")
+        else:
+            # 非首次运行时直接跳过选择
+            print("检测到已配置域名，跳过选择...")
+
+        return config
 
     # 自动获取和维护用户Cookie
     async def getcookie(self):
@@ -195,9 +237,9 @@ class yuketang:
 
     # 用于获取用户基本信息
     def get_basicinfo(self):
-        url = f"https://{domain}/api/v3/user/basic-info"
+        url = f"https://{self.domain}/api/v3/user/basic-info"
         headers = {
-            "Referer": f"https://{domain}/web?next=/v2/web/index&type=3",
+            "Referer": f"https://{self.domain}/web?next=/v2/web/index&type=3",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
             "cookie": self.cookie
         }
@@ -210,9 +252,9 @@ class yuketang:
 
     # 课程基本信息获取方法
     def lesson_info(self, lessonId):
-        url = f"https://{domain}/api/v3/lesson/basic-info"
+        url = f"https://{self.domain}/api/v3/lesson/basic-info"
         headers = {
-            "Referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
+            "Referer": f"https://{self.domain}/lesson/fullscreen/v3/{lessonId}?source=5",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
             "Cookie": self.cookie,
             "Authorization": self.lessonIdDict[lessonId]['Authorization']
@@ -228,14 +270,18 @@ class yuketang:
         try:
             data = res.json().get('data', {})
             title = data.get('title', '未知标题')
+            lesson_entry['title'] = title
             teacher_name = data.get('teacher', {}).get('name', '未知教师')
             start_time = convert_date(data.get('startTime', '')) if data.get('startTime') else '获取失败'
-            lesson_entry['title'] = title
+            if isinstance(start_time, datetime):
+                formatted_start_time = yuketang.format_time(start_time)
+            else:
+                formatted_start_time = start_time
             lesson_entry['header'] = (
                 f"课程: {classroom_name}\n"
                 f"标题: {title}\n"
                 f"教师: {teacher_name}\n"
-                f"开始时间: {start_time}"
+                f"开始时间: {formatted_start_time}"
             )
         except Exception:
             lesson_entry['title'] = '未知标题'
@@ -348,10 +394,10 @@ class yuketang:
         if not presentation_id:
             self.msgmgr.sendMsg(f"Error: presentation_id not found for lesson {lessonId}")
             return
-        url = f"https://{domain}/api/v3/lesson/presentation/fetch"
+        url = f"https://{self.domain}/api/v3/lesson/presentation/fetch"
         params = {"presentation_id": presentation_id}
         headers = {
-            "referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
+            "referer": f"https://{self.domain}/lesson/fullscreen/v3/{lessonId}?source=5",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
             "cookie": self.cookie,
             "Authorization": lesson_info.get('Authorization', '')
@@ -461,13 +507,12 @@ class yuketang:
             return
 
         # 安全性：确保 domain、cookie、Authorization 的存在性
-        domain = self.domain  # 确保使用类属性 domain
         cookie = lesson_info.get('cookie', '')
         authorization = lesson_info.get('Authorization', '')
 
-        url = f"https://{domain}/api/v3/lesson/problem/answer"
+        url = f"https://{self.domain}/api/v3/lesson/problem/answer"
         headers = {
-            "referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
+            "referer": f"https://{self.domain}/lesson/fullscreen/v3/{lessonId}?source=5",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
             "cookie": cookie,
             "Content-Type": "application/json",
@@ -519,7 +564,7 @@ class yuketang:
 
     # WebSocket请求二维码
     async def ws_login(self):
-        uri = f"wss://{domain}/wsapp/"
+        uri = f"wss://{self.domain}/wsapp/"
         async with websockets.connect(uri, ping_timeout=180, ping_interval=5) as websocket:
             hello_message = {
                 "op": "requestlogin",
@@ -589,18 +634,22 @@ class yuketang:
                 break
 
     async def receive_messages(self, lessonId):
+        lesson_info = None  # 初始化为None
         await self.pull_probleminfo(lessonId)
         while not self.stop_event.is_set():
             try:
-                # 提取键值检查并捕获KeyError
                 lesson_info = self.lessonIdDict.get(lessonId)
                 if not lesson_info:
                     raise KeyError(f"无法找到对应的WebSocket连接: {lessonId}")
                 websocket = lesson_info['websocket']
-                
                 server_response = await recv_json(websocket)
             except (KeyError, ConnectionError, json.JSONDecodeError) as e:
-                self.msgmgr.sendMsg(f"{lesson_info['header'] if lesson_info else ''}\n消息: 连接断开或响应解析失败")
+                # 使用安全方式访问header字段
+                header = lesson_info.get('header') if lesson_info else ''
+                self.msgmgr.sendMsg(f"{header}\n消息: 连接断开或响应解析失败")
+                break
+            except Exception as e:
+                self.msgmgr.sendMsg(f"未知错误: {str(e)}")
                 break
             except Exception as e:
                 # 捕获其他异常但保留原意
@@ -714,7 +763,7 @@ class yuketang:
                     del self.lessonIdDict[lessonId][key]
 
         del_dict()
-        uri = f"wss://{domain}/wsapp/"
+        uri = f"wss://{self.domain}/wsapp/"
         async with websockets.connect(uri, ping_timeout=180, ping_interval=15) as websocket:
             # 发送 "hello" 消息以建立连接
             hello_message = {
@@ -840,14 +889,14 @@ class yuketang:
 
     async def lesson_attend(self):
         tasks = [asyncio.create_task(self.ws_lesson(lessonId)) for lessonId in self.lessonIdNewList]
-        asyncio.gather(*tasks)
+        await asyncio.gather(*tasks)
         self.lessonIdNewList = []
 
     # 获取课程问题 & 题型判断
     def fetch_problems(self, lessonId):
-        url = f"https://{domain}/api/v3/lesson/presentation/fetch?presentation_id={self.lessonIdDict[lessonId]['presentation']}"
+        url = f"https://{self.domain}/api/v3/lesson/presentation/fetch?presentation_id={self.lessonIdDict[lessonId]['presentation']}"
         headers = {
-            "referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
+            "referer": f"https://{self.domain}/lesson/fullscreen/v3/{lessonId}?source=5",
             "User-Agent": "Mozilla/5.0 ...",
             "cookie": self.cookie,
             "Authorization": self.lessonIdDict[lessonId]['Authorization']

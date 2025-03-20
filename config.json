@@ -1,55 +1,38 @@
 {
-  "yuketang": {
-    "domain": "changjiang.yuketang.cn",
-    "wx": false,
-    "dd": false,
-    "fs": false,
-    "an": false,
-    "ppt": false,
-    "si": false,
-     "enable_ai": false,
-    "timeout": 30,
-    "dashscope_api_key": "ds-XXXXXXXXXXXXXXXXXXXXXXXX"
-  },
-  "send": {
-    "wx": {
-      "touser": "@all",
-      "agentId": "####",
-      "secret": "####",
-      "companyId": "####",
-      "msgLimit": 500,
-      "dataLimit": 20971520
+    "yuketang": {
+        "domain": "",
+        "first_run": true,
+        "wx": false,
+        "an": false,
+        "si": false,
+        "enable_ai": false,
+        "timeout": 30,
+        "dashscope_api_key": "ds-XXXXXXXXXXXXXXXXXXXXXXXX"
     },
-    "dd": {
-      "appKey": "####",
-      "appSecret": "####",
-      "robotCode": "####",
-      "openConversationId": "####",
-      "msgLimit": 3000,
-      "dataLimit": 20971520
+    "send": {
+        "wx": {
+            "touser": "@all",
+            "agentId": "####",
+            "secret": "####",
+            "companyId": "####",
+            "msgLimit": 500,
+            "dataLimit": 20971520
+        },
+        "timeout": 30
     },
-    "fs": {
-      "appId": "###",
-      "appSecret": "####",
-      "msgLimit": 10000,
-      "dataLimit": 31457280
+    "util": {
+        "threads": 20,
+        "timezone": "Asia/Shanghai",
+        "timeout": 30
     },
-    "timeout": 30
-  },
-  "util": {
-    "threads": 20,
-    "timezone": "Asia/Shanghai",
-    "timeout": 30
-  },
-  "users":[
-    {
-      "name": "####",
-      "openId": "####"
-    },
-    {
-      "name": "####",
-      "openId":"####"
-    }
-  ]
+    "users": [
+        {
+            "name": "####",
+            "openId": "####"
+        },
+        {
+            "name": "####",
+            "openId": "####"
+        }
+    ]
 }
-
