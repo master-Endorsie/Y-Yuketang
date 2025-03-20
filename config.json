@@ -1,7 +1,7 @@
 {
     "yuketang": {
-        "domain": "",
-        "first_run": true,
+        "domain": "changjiang.yuketang.cn",
+        "first_run": false,
         "wx": false,
         "an": false,
         "si": false,
