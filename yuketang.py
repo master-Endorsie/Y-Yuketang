@@ -25,7 +25,7 @@ class yuketang:
     def format_time(dt_obj):
         weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
         weekday = weekdays[dt_obj.weekday()]
-        return f"{dt_obj.day}号 {weekday} {dt_obj.hour:02d}:{dt_obj.minute:02d}:{dt_obj.second:02d}"
+        return f"{dt_obj.day}日 {weekday} {dt_obj.hour:02d}:{dt_obj.minute:02d}:{dt_obj.second:02d}"
 
     shared_answers = {}
 

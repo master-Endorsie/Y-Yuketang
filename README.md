@@ -1,23 +1,19 @@
 # Y-Yuketang 长江雨课堂自动化工具
 
 ## 🚀 项目简介
-本项目支持自动签到、AI自动答题（画饼）、PPT下载及课堂进度监控。基于 Python 异步框架实现多线程监听，适配企业微信推送。
+本项目支持自动签到、AI自动答题（画饼）、PPT下载。基于 Python 异步框架实现多线程监听，适配企业微信推送。
 
 ---
 
-## 📦 安装与依赖
-### 依赖安装
+## 📦 安装依赖
 #### Windows 系统
 ```bash
 pip install -r requirements.txt
 ```
 请确保已安装 [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)。
 
-#### Linux 系统依赖
-```bash
-sudo apt-get install libzbar0 libzbar-dev  # 安装 pyzbar 依赖
-pip install -r requirements.txt
-```
+Linux 系统依赖需要额外安装 pyzbar 依赖 `sudo apt-get install libzbar0 libzbar-dev`
+
 
 ---
 
@@ -28,9 +24,8 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
-
-### 步骤 3：扫码登录
-控制台输出二维码，微信扫码后获取 Cookie。
+### 步骤 3：选择雨课堂服务器
+### 步骤 4：扫码登录
 
 ---
 
@@ -38,29 +33,17 @@ python main.py
 ### 配置文件结构 (`config.json`)
 ```json
 {
-  "yuketang": {
-    "domain": "changjiang.yuketang.cn",          // 长江雨课堂域名（默认）
-    "an": false,                                 // 自动答题开关
-    "ppt": false,                                // 自动下载PPT开关
-    "si": false,                                 // PPT进度推送开关
-    "timeout": 30                                // API超时时间（秒）
-  },
-  "users": [
-    {"name": "user1", "openId": "OPENID1"},      // 用户账号信息
-    {"name": "user2", "openId": "OPENID2"}
-  ]
-}
-
+    "yuketang": {
+        "domain": "",                                           
+        "first_run": true,                                      
+        "wx": false,                                            # 是否启用企业微信推送
+        "an": false,                                                        
+        "si": false,                                            # 是否实时推送PPT当前页码
+        "enable_ai": false,                                     
+        "timeout": 30,                                          
+        "dashscope_api_key": "ds-XXXXXXXXXXXXXXXXXXXXXXXX"      
+    },
 ```
-
-### 配置项详细说明
-#### **`Y-Yuketang` 配置**
-| 参数名                  | 说明                              |
-|-------------------------|---------------------------------|
-| `domain`                | 长江雨课堂域名 `changjiang.yuketang.cn` |
-| `an`                    | 启用自动答题（需多人共享答案库）                     |
-| `ppt`                   | 自动下载PPT并生成PDF                             |
-| `si`                    | 实时推送PPT当前页码                          |
 
 ---
 
@@ -68,11 +51,10 @@ python main.py
 ### 1. 自动签到
 - **触发频率**：每 30 秒自动检查。
 
-### 2. 自动答题
-- **题型支持**：单选、多选、填空（依赖共享答案库）。
-- **限制**：需多人同时运行以共享答案。
+### 2. AI自动答题（画饼
+- **题型支持**：单选、多选。
 
-### 3. PPT 下载与监控
+### 3. PPT 下载
 - **存储路径**：`./{lessonId}/`（如 `./2023秋-机器学习-0/`）。
 - **文件格式**：PPT图片转为 PDF 文件，命名格式 `课程名-标题.pdf`。
 
@@ -80,8 +62,8 @@ python main.py
 
 ## 🛠️ 推送配置指南
 ### 企业微信 (`wx`)
-1. 注册企业微信应用，获取 `agentId`、`secret`、`companyId`。
-2. 在 `config.json` 中启用 `yuketang.wx = true`，并填写 `send.wx` 配置：
+1. 注册企业微信应用，获取 `agentId`、`secret`、`companyId`，并在应用管理中添加企业可信ip
+2. 在 `config.json` 中启用 `yuketang.wx = true`，并在下面填写所需配置：
    ```json
    "send": {
      "wx": {
@@ -136,22 +118,11 @@ util.py：工具函数，包括文件操作、时间处理、二维码生成等�
 ---
 
 ## 📝 附录
-### 1. 依赖库列表
-```python
-requests        # HTTP请求
-websockets      # WebSocket通信
-aiofiles        # 异步文件操作
-pyzbar          # 二维码识别
-Pillow          # 图像处理
-python-dateutil # 时间转换
-openai          # OpenAI API
-```
-
-### 2. 推送示例
+### 推送示例
 ```plaintext
-课程: 大学外语
+课程: 自动控制原理★
 标题: 第2章
 教师: 小美
-开始时间: 0000年00月00日00时00分00秒
+开始时间: 00日 星期天 00时00分00秒
 消息: 签到成功
 ```
