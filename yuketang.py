@@ -280,6 +280,7 @@ class yuketang:
                 # 其他异常情况
                 self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 签到失败")
 
+    # 抓取ppt图片
     def fetch_presentation(self, lessonId):
         url = f"https://{domain}/api/v3/lesson/presentation/fetch?presentation_id={self.lessonIdDict[lessonId]['presentation']}"
         headers = {
@@ -336,7 +337,24 @@ class yuketang:
         else:
             self.msgmgr.sendMsg(
                 f"{self.lessonIdDict[lessonId]['header']}\n{format_json_to_text(self.lessonIdDict[lessonId]['problems'], self.lessonIdDict[lessonId].get('unlockedproblem', []))}")
-        folder_path = lessonId
+        # 1. 提取课堂名称
+        classroom_name = self.lessonIdDict[lessonId].get('classroomName', '未知课程')
+
+        # 2. 清理课堂名称中的非法字符（如 / \ ? * : | " < >）
+        safe_classroom = re.sub(r'[^a-zA-Z0-9\u4e00-\u9fa5_\- ]', '_', classroom_name)
+
+        # 3. 构建完整路径：ppt/课堂名/
+        base_dir = "ppt"
+        folder_path = os.path.join(base_dir, safe_classroom)
+
+        # 4. 确保目录存在
+        os.makedirs(folder_path, exist_ok=True)
+
+        # 5. 生成PDF路径
+        pdf_filename = f"{safe_classroom}-{self.lessonIdDict[lessonId].get('title', '未知标题')}.pdf"
+        output_pdf_path = os.path.join(folder_path, pdf_filename)
+
+        # 6. 启动异步任务
         asyncio.create_task(self.download_presentation(slides, folder_path, lessonId))
 
         async def fetch_presentation_background():
@@ -355,6 +373,18 @@ class yuketang:
                 self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 没有PPT")
             if self.ppt:
                 asyncio.create_task(fetch_presentation_background())
+
+    #下载ppt的图片
+    async def download_presentation(self, slides, folder_path, lessonId):
+        await asyncio.get_event_loop().run_in_executor(None, clear_folder, folder_path)
+        await asyncio.get_event_loop().run_in_executor(None, download_images_to_folder, slides, folder_path)
+        output_pdf_path = os.path.join(folder_path,
+                                       f"{self.lessonIdDict[lessonId]['classroomName']}-{self.lessonIdDict[lessonId]['title']}.pdf")
+        await asyncio.get_event_loop().run_in_executor(None, images_to_pdf, folder_path, output_pdf_path)
+        if os.path.exists(output_pdf_path):
+            self.msgmgr.sendFile(output_pdf_path)
+        else:
+            self.msgmgr.sendMsg(f"PPT下载失败：未找到文件")
 
     async def answer(self, lessonId):
         url = f"https://{domain}/api/v3/lesson/problem/answer"
@@ -394,7 +424,7 @@ class yuketang:
                     await asyncio.sleep(delay)
                     print(f"出现异常, 尝试重试 ({attempt}/{retries})")
 
-    # WebSocket请求二维码
+    # WebSocket请求登录二维码
     async def ws_login(self):
         uri = f"wss://{domain}/wsapp/"
         async with websockets.connect(uri, ping_timeout=180, ping_interval=5) as websocket:
@@ -441,17 +471,6 @@ class yuketang:
             except Exception as e:
                 self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 连接断开")
                 break
-
-    async def download_presentation(self, slides, folder_path, lessonId):
-        await asyncio.get_event_loop().run_in_executor(None, clear_folder, folder_path)
-        await asyncio.get_event_loop().run_in_executor(None, download_images_to_folder, slides, folder_path)
-        output_pdf_path = os.path.join(folder_path,
-                                       f"{self.lessonIdDict[lessonId]['classroomName']}-{self.lessonIdDict[lessonId]['title']}.pdf")
-        await asyncio.get_event_loop().run_in_executor(None, images_to_pdf, folder_path, output_pdf_path)
-        if os.path.exists(output_pdf_path):
-            self.msgmgr.sendFile(output_pdf_path)
-        else:
-            self.msgmgr.sendMsg(f"PPT下载失败：未找到文件")
 
     async def receive_messages(self, lessonId):
         await self.pull_probleminfo(lessonId)
