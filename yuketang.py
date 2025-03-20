@@ -1,9 +1,14 @@
 import asyncio
+import logging
+import self
 import websockets
 import json
 import requests
 import os
+import asyncio
+import re
 import time
+from websockets.exceptions import ConnectionClosed
 from datetime import datetime as dt, timedelta, timezone as dt_timezone
 import traceback
 from util import *
@@ -23,31 +28,57 @@ domain = yt_config['domain']
 class yuketang:
     shared_answers = {}
 
+    # 发送课程状态消息
+    def send_status_msg(self, lessonId, status):
+        header = self.lessonIdDict[lessonId].get('header', '未知课程')
+        self.msgmgr.sendMsg(f"{header}\n消息: {status}")
     def __init__(self, name, openId) -> None:
         self.name = name
         self.openId = openId
         self.cookie = ''
-        self.cookie_time = ''
-
         self.lessonIdNewList = []
         self.lessonIdDict = {}
-        self.wx = yt_config['wx']
-        self.dd = yt_config['dd']
-        self.fs = yt_config['fs']
-        self.an = yt_config['an']
-        self.ppt = yt_config['ppt']
-        self.si = yt_config['si']
+
+        # 新增配置项声明
+        self.domain = yt_config.get('domain')
+        self.timeout = yt_config.get('timeout')
+
+        # 配置项安全获取（使用循环简化）
+        config_keys = ['wx', 'dd', 'fs', 'an', 'ppt', 'si']
+        for key in config_keys:
+            setattr(self, key, yt_config.get(key))
+
+        # 配置校验
+        if not self.domain:
+            raise ValueError("配置文件缺少domain参数")
+        if not self.timeout:
+            raise ValueError("配置文件缺少timeout参数")
+
         self.cookie_time = None
+        self.lock = asyncio.Lock()
         self.config = self.load_config()
         self.cookie_valid_reminder_sent = False
-        self.enable_ai = self.config['yuketang'].get('enable_ai', False)
-        self.msgmgr = SendManager(openId=self.openId, wx=self.wx, dd=self.dd, fs=self.fs)
+        self.enable_ai = self.config.get('yuketang', {}).get('enable_ai', False)
+        self.msgmgr = SendManager(
+            openId=self.openId,
+            wx=self.wx,
+            dd=self.dd,
+            fs=self.fs
+        )
 
+    # 获取当前文件的绝对路径，并构造配置文件的完整路径
     def load_config(self):
-        current_dir = os.path.dirname(__file__)
-        os.chdir(current_dir)
-        with open('config.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(current_dir, 'config.json')
+
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError as e:
+            raise Exception(f"配置文件 {config_path} 未找到") from e
+        except json.JSONDecodeError as e:
+            raise Exception(f"配置文件 {config_path} 格式错误：{str(e)}") from e
 
     # 自动获取和维护用户Cookie
     async def getcookie(self):
@@ -112,34 +143,40 @@ class yuketang:
 
     # 向服务器发送登录请求，携带用户凭证
     def weblogin(self, UserID, Auth):
-        url = f"https://{domain}/pc/web_login"
+        url = f"https://{self.domain}/pc/web_login"  # 假设 domain 是类属性
         data = {
             "UserID": UserID,
             "Auth": Auth
         }
         headers = {
-            "referer": f"https://{domain}/web?next=/v2/web/index&type=3",
+            "referer": f"https://{self.domain}/web?next=/v2/web/index&type=3",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
             "Content-Type": "application/json"
         }
         try:
-            res = requests.post(url=url, headers=headers, json=data, timeout=timeout)
-        except Exception as e:
+            res = requests.post(url=url, headers=headers, json=data, timeout=self.timeout)  # 假设 timeout 是类属性
+        except requests.exceptions.RequestException as e:
             print(f"登录失败: {e}")
             return
-        cookies = res.cookies
-        self.cookie = ""
-        for k, v in cookies.items():
-            self.cookie += f'{k}={v};'
+
+        # 正确拼接 Cookie
+        cookies_list = []
+        for k, v in res.cookies.items():
+            cookies_list.append(f"{k}={v}")
+        self.cookie = "; ".join(cookies_list)
+
         date = cookie_date(res)
         if date:
-            content = f'{self.cookie}\n{date}'
             self.cookie_time = convert_date(int(date))
+            content = f"{self.cookie}\n{date}"
         else:
             content = self.cookie
-        with open(f"{self.name}cookie", "w") as f:
+            self.cookie_time = None  # 或其他默认值
+
+        # 保存文件时确保路径安全
+        filename = f"{self.name}_cookie.txt"  # 添加后缀并规范命名
+        with open(filename, "w") as f:
             f.write(content)
-        self.cookie_time = convert_date(int(date))
 
     # 验证Cookie有效性
     def check_cookie(self):
@@ -152,283 +189,338 @@ class yuketang:
 
     # 将HTTP响应中的认证令牌保存到课程对应的会话数据中
     def setAuthorization(self, res, lessonId):
-        if res.headers.get("Set-Auth") is not None:
-            self.lessonIdDict[lessonId]['Authorization'] = "Bearer " + res.headers.get("Set-Auth")
+        auth = res.headers.get("Set-Auth")
+        if auth is not None:
+            self.lessonIdDict[lessonId]['Authorization'] = f"Bearer {auth}"
 
     # 用于获取用户基本信息
     def get_basicinfo(self):
         url = f"https://{domain}/api/v3/user/basic-info"
         headers = {
-            "referer": f"https://{domain}/web?next=/v2/web/index&type=3",
+            "Referer": f"https://{domain}/web?next=/v2/web/index&type=3",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
             "cookie": self.cookie
         }
         try:
-            res = requests.get(url=url, headers=headers, timeout=timeout).json()
-            return res
-        except Exception as e:
+            response = requests.get(url=url, headers=headers, timeout=timeout)
+            response.raise_for_status()  # 检查HTTP状态码是否为2xx
+            return response.json()
+        except requests.exceptions.RequestException as e:
             return {}
 
     # 课程基本信息获取方法
     def lesson_info(self, lessonId):
         url = f"https://{domain}/api/v3/lesson/basic-info"
         headers = {
-            "referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
+            "Referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-            "cookie": self.cookie,
+            "Cookie": self.cookie,
             "Authorization": self.lessonIdDict[lessonId]['Authorization']
         }
         try:
             res = requests.get(url=url, headers=headers, timeout=timeout)
-        except Exception as e:
+            res.raise_for_status()  # 检查HTTP错误状态码
+        except requests.exceptions.RequestException:
             return
+        lesson_entry = self.lessonIdDict[lessonId]
         self.setAuthorization(res, lessonId)
-        classroomName = self.lessonIdDict[lessonId]['classroomName']
+        classroom_name = lesson_entry['classroomName']
         try:
-            self.lessonIdDict[lessonId]['title'] = res.json()['data']['title']
-            self.lessonIdDict[lessonId][
-                'header'] = f"课程: {classroomName}\n标题: {self.lessonIdDict[lessonId]['title']}\n教师: {res.json()['data']['teacher']['name']}\n开始时间: {convert_date(res.json()['data']['startTime'])}"
-        except Exception as e:
-            self.lessonIdDict[lessonId]['title'] = '未知标题'
-            self.lessonIdDict[lessonId][
-                'header'] = f"课程: {classroomName}\n标题: 获取失败\n教师: 获取失败\n开始时间: 获取失败"
+            data = res.json().get('data', {})
+            title = data.get('title', '未知标题')
+            teacher_name = data.get('teacher', {}).get('name', '未知教师')
+            start_time = convert_date(data.get('startTime', '')) if data.get('startTime') else '获取失败'
+            lesson_entry['title'] = title
+            lesson_entry['header'] = (
+                f"课程: {classroom_name}\n"
+                f"标题: {title}\n"
+                f"教师: {teacher_name}\n"
+                f"开始时间: {start_time}"
+            )
+        except Exception:
+            lesson_entry['title'] = '未知标题'
+            lesson_entry['header'] = (
+                f"课程: {classroom_name}\n"
+                f"标题: 获取失败\n"
+                f"教师: 获取失败\n"
+                f"开始时间: 获取失败"
+            )
 
     # 获取当前进行中的课程列表
     def getlesson(self):
-        url = f"https://{domain}/api/v3/classroom/on-lesson-upcoming-exam"
+        url = f"https://{self.domain}/api/v3/classroom/on-lesson-upcoming-exam"  # 假设domain是类属性
         headers = {
-            "referer": f"https://{domain}/web?next=/v2/web/index&type=3",
+            "referer": f"https://{self.domain}/web?next=/v2/web/index&type=3",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
             "cookie": self.cookie
         }
         try:
-            online_data = requests.get(url=url, headers=headers, timeout=timeout).json()
-        except Exception as e:
-            return False
+            response = requests.get(url, headers=headers, timeout=self.timeout)  # 假设timeout是类属性
+            online_data = response.json()
+        except (requests.exceptions.RequestException, ValueError) as e:
+            return False  # 请求或JSON解析失败
+
         try:
-            self.lessonIdNewList = []
-            if online_data['data']['onLessonClassrooms'] == []:
-                for lessonId in self.lessonIdDict:
-                    self.lessonIdDict[lessonId].get('websocket', '').close()
-                self.lessonIdDict = {}
-                return False
-            for item in online_data['data']['onLessonClassrooms']:
-                # 移除所有过滤条件
-                lessonId = item['lessonId']
-                if lessonId not in self.lessonIdDict:
-                    self.lessonIdNewList.append(lessonId)
-                    self.lessonIdDict[lessonId] = {}
-                    self.lessonIdDict[lessonId]['start_time'] = time.time()
-                    self.lessonIdDict[lessonId]['classroomName'] = item['courseName']
-                self.lessonIdDict[lessonId]['active'] = '1'
-            to_delete = [lessonId for lessonId, details in self.lessonIdDict.items() if
-                         not details.get('active', '0') == '1']
-            for lessonId in to_delete:
-                del self.lessonIdDict[lessonId]
-                self.lessonIdDict[lessonId].get('websocket', '').close()
-            for lessonId in self.lessonIdDict:
-                self.lessonIdDict[lessonId]['active'] = '0'
-            if self.lessonIdNewList:
-                return True
+            classrooms = online_data['data']['onLessonClassrooms']
+        except (KeyError, TypeError):
+            classrooms = []
+
+        self.lessonIdNewList = []
+        active_lessons = set()
+
+        # 处理新课程数据
+        for item in classrooms:
+            lessonId = item['lessonId']
+            active_lessons.add(lessonId)
+            if lessonId not in self.lessonIdDict:
+                self.lessonIdNewList.append(lessonId)
+                self.lessonIdDict[lessonId] = {
+                    'start_time': time.time(),
+                    'classroomName': item['courseName'],
+                    'active': True
+                }
             else:
-                return False
-        except Exception as e:
-            return False
+                self.lessonIdDict[lessonId]['active'] = True
+
+        # 清理过期课程
+        to_delete = []
+        for lessonId in self.lessonIdDict:
+            if lessonId not in active_lessons:
+                to_delete.append(lessonId)
+            else:
+                self.lessonIdDict[lessonId]['active'] = True  # 重置为True后会被后续覆盖
+
+        # 执行清理
+        for lessonId in to_delete:
+            ws = self.lessonIdDict[lessonId].get('websocket', None)
+            if ws:
+                ws.close()
+            del self.lessonIdDict[lessonId]
+
+        return bool(self.lessonIdNewList)
 
     # 课程签到功能
     def lesson_checkin(self):
+        headers_base = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+            "Content-Type": "application/json; charset=utf-8",
+            "cookie": self.cookie
+        }
         for lessonId in self.lessonIdNewList:
-            # 1. 发送签到请求
-            url = f"https://{domain}/api/v3/lesson/checkin"
-            headers = {
-                "referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-                "Content-Type": "application/json; charset=utf-8",
-                "cookie": self.cookie
-            }
-            data = {
-                "source": 5,
-                "lessonId": lessonId
-            }
+            url = f"https://{self.domain}/api/v3/lesson/checkin"  # 假设domain为类属性
+            headers = headers_base.copy()
+            headers["referer"] = f"https://{self.domain}/lesson/fullscreen/v3/{lessonId}?source=5"
+            
+            data = {"source": 5, "lessonId": lessonId}
             try:
-                res = requests.post(url, headers=headers, json=data, timeout=timeout)
-            except Exception as e:
-                return  # 网络请求失败直接终止
-
-            # 2. 处理响应
-            self.setAuthorization(res, lessonId)  # 更新认证信息
-            self.lesson_info(lessonId)  # 获取课程详细信息
-
-            # 3. 解析响应数据
+                res = requests.post(url, headers=headers, json=data, timeout=self.timeout)
+                res.raise_for_status()  # 检查HTTP状态码
+            except requests.exceptions.RequestException as e:
+                self.msgmgr.sendMsg(f"请求失败: {str(e)}")
+                continue
+            
+            self.setAuthorization(res, lessonId)
+            self.lesson_info(lessonId)
+            
             try:
-                self.lessonIdDict[lessonId]['Auth'] = res.json()['data']['lessonToken']
-                self.lessonIdDict[lessonId]['userid'] = res.json()['data']['identityId']
-            except Exception as e:
-                # 数据解析失败时设置默认值
-                self.lessonIdDict[lessonId]['Auth'] = ''
-                self.lessonIdDict[lessonId]['userid'] = ''
-
-            # 4. 判断签到结果
-            checkin_status = res.json().get('msg', '')
-            if checkin_status == 'OK':
-                # 签到成功
-                self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 签到成功")
-            elif checkin_status == 'LESSON_END':
-                # 课程已结束
-                self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 课程已结束")
+                res_data = res.json().get('data', {})
+                lesson_dict = self.lessonIdDict.get(lessonId, {})
+                lesson_dict['Auth'] = res_data.get('lessonToken', '')
+                lesson_dict['userid'] = res_data.get('identityId', '')
+                self.lessonIdDict[lessonId] = lesson_dict  # 确保字典结构存在
+            except (ValueError, KeyError, TypeError) as e:
+                self.lessonIdDict[lessonId] = {'Auth': '', 'userid': ''}
+                self.msgmgr.sendMsg(f"数据解析异常: {str(e)}")
+            
+            msg = res.json().get('msg', '')
+            if msg == 'OK':
+                self.send_status_msg(lessonId, "签到成功")
+            elif msg == 'LESSON_END':
+                self.send_status_msg(lessonId, "课程已结束")
             else:
-                # 其他异常情况
-                self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 签到失败")
+                self.send_status_msg(lessonId, "签到失败")
 
-    # 抓取ppt图片
+    # 抓捕ppt图片
     def fetch_presentation(self, lessonId):
-        url = f"https://{domain}/api/v3/lesson/presentation/fetch?presentation_id={self.lessonIdDict[lessonId]['presentation']}"
+        lesson_info = self.lessonIdDict[lessonId]
+        # 安全构建URL
+        presentation_id = lesson_info.get('presentation')
+        if not presentation_id:
+            self.msgmgr.sendMsg(f"Error: presentation_id not found for lesson {lessonId}")
+            return
+        url = f"https://{domain}/api/v3/lesson/presentation/fetch"
+        params = {"presentation_id": presentation_id}
         headers = {
             "referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
             "cookie": self.cookie,
-            "Authorization": self.lessonIdDict[lessonId]['Authorization']
+            "Authorization": lesson_info.get('Authorization', '')
         }
-        res = requests.get(url, headers=headers, timeout=timeout)
-        self.setAuthorization(res, lessonId)
-        info = res.json()
-        slides = info['data']['slides']  # 获得幻灯片列表
-        self.lessonIdDict[lessonId]['problems'] = {}
-        self.lessonIdDict[lessonId]['covers'] = [slide['index'] for slide in slides if slide.get('cover') is not None]
+        try:
+            res = requests.get(url, headers=headers, params=params, timeout=timeout)
+            res.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            self.msgmgr.sendMsg(f"请求失败: {str(e)}")
+            return
+        try:
+            info = res.json()
+        except ValueError:
+            self.msgmgr.sendMsg("无效的JSON响应")
+            return
+    
+        slides = info.get('data', {}).get('slides', [])
+        lesson_info['problems'] = {}
+        covers = [slide['index'] for slide in slides if slide.get('cover') is not None]
+        lesson_info['covers'] = covers
+    
         for slide in slides:
-            if slide.get("problem") is not None:
-                self.lessonIdDict[lessonId]['problems'][slide['id']] = slide['problem']
-                self.lessonIdDict[lessonId]['problems'][slide['id']]['index'] = slide['index']
-                if slide['problem']['body'] == '':
-                    shapes = slide.get('shapes', [])
-                    if shapes:
-                        min_left_item = min(shapes, key=lambda item: item.get('Left', 9999999))
-                        if min_left_item != 9999999 and min_left_item.get('Text') is not None:
-                            self.lessonIdDict[lessonId]['problems'][slide['id']]['body'] = min_left_item['Text']
-                        else:
-                            self.lessonIdDict[lessonId]['problems'][slide['id']]['body'] = '未知问题'
-                    else:
-                        self.lessonIdDict[lessonId]['problems'][slide['id']]['body'] = '未知问题'
-
-                if self.lessonIdDict[lessonId]['problems'][slide['id']]['problemType'] == 5:
-                    if self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] in [[], None, 'null'] and not \
-                            self.lessonIdDict[lessonId]['problems'][slide['id']]['result'] in [[], None, 'null']:
-                        yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']][
-                            'result']
-                elif self.lessonIdDict[lessonId]['problems'][slide['id']]['problemType'] == 4:
-                    num_blanks = len(self.lessonIdDict[lessonId]['problems'][slide['id']]['blanks'])
-                    if not check_answers_in_blanks(self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'],
-                                                   num_blanks):
-                        if check_answers_in_blanks(self.lessonIdDict[lessonId]['problems'][slide['id']]['result'],
-                                                   num_blanks):
-                            yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']][
-                                'result']
+            problem = slide.get("problem")
+            if problem is None:
+                continue
+            slide_id = slide['id']
+            problem_data = problem.copy()
+            problem_data['index'] = slide['index']
+            if problem_data['body'] == '':
+                shapes = slide.get('shapes', [])
+                if shapes:
+                    min_left_item = min(shapes, key=lambda item: item.get('Left', 9999999))
+                    problem_data['body'] = min_left_item.get('Text', '未知问题')
                 else:
-                    if not check_answers_in_options(self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'],
-                                                    self.lessonIdDict[lessonId]['problems'][slide['id']][
-                                                        'options']) and check_answers_in_options(
-                        self.lessonIdDict[lessonId]['problems'][slide['id']]['result'],
-                        self.lessonIdDict[lessonId]['problems'][slide['id']]['options']) and not \
-                            self.lessonIdDict[lessonId]['problems'][slide['id']]['result'] in [[], None, 'null']:
-                        yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']][
-                            'result']
-        if self.lessonIdDict[lessonId]['problems'] == {}:
-            self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n问题列表: 无")
+                    problem_data['body'] = '未知问题'
+            lesson_info['problems'][slide_id] = problem_data
+    
+        if not lesson_info['problems']:
+            self.msgmgr.sendMsg(f"{lesson_info['header']}\n问题列表: 无")
         else:
             self.msgmgr.sendMsg(
-                f"{self.lessonIdDict[lessonId]['header']}\n{format_json_to_text(self.lessonIdDict[lessonId]['problems'], self.lessonIdDict[lessonId].get('unlockedproblem', []))}")
-        # 1. 提取课堂名称
-        classroom_name = self.lessonIdDict[lessonId].get('classroomName', '未知课程')
-
-        # 2. 清理课堂名称中的非法字符（如 / \ ? * : | " < >）
+                f"{lesson_info['header']}\n{format_json_to_text(lesson_info['problems'], lesson_info.get('unlockedproblem', []))}")
+    
+        classroom_name = lesson_info.get('classroomName', '未知课程')
         safe_classroom = re.sub(r'[^a-zA-Z0-9\u4e00-\u9fa5_\- ]', '_', classroom_name)
-
-        # 3. 构建完整路径：ppt/课堂名/
         base_dir = "ppt"
         folder_path = os.path.join(base_dir, safe_classroom)
-
-        # 4. 确保目录存在
         os.makedirs(folder_path, exist_ok=True)
-
-        # 5. 生成PDF路径
-        pdf_filename = f"{safe_classroom}-{self.lessonIdDict[lessonId].get('title', '未知标题')}.pdf"
+        pdf_filename = f"{safe_classroom}-{lesson_info.get('title', '未知标题')}.pdf"
         output_pdf_path = os.path.join(folder_path, pdf_filename)
-
-        # 6. 启动异步任务
         asyncio.create_task(self.download_presentation(slides, folder_path, lessonId))
-
-        async def fetch_presentation_background():
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, clear_folder, folder_path)
-            await loop.run_in_executor(None, download_images_to_folder, slides, folder_path)
-            output_pdf_path = os.path.join(folder_path,
-                                           f"{self.lessonIdDict[lessonId]['classroomName']}-{self.lessonIdDict[lessonId]['title']}.pdf")
-            await loop.run_in_executor(None, images_to_pdf, folder_path, output_pdf_path)
-            if os.path.exists(output_pdf_path):
-                try:
-                    self.msgmgr.sendFile(output_pdf_path)
-                except Exception as e:
-                    self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: PPT推送失败")
-            else:
-                self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 没有PPT")
-            if self.ppt:
-                asyncio.create_task(fetch_presentation_background())
-
-    #下载ppt的图片
+    
     async def download_presentation(self, slides, folder_path, lessonId):
-        await asyncio.get_event_loop().run_in_executor(None, clear_folder, folder_path)
-        await asyncio.get_event_loop().run_in_executor(None, download_images_to_folder, slides, folder_path)
-        output_pdf_path = os.path.join(folder_path,
-                                       f"{self.lessonIdDict[lessonId]['classroomName']}-{self.lessonIdDict[lessonId]['title']}.pdf")
-        await asyncio.get_event_loop().run_in_executor(None, images_to_pdf, folder_path, output_pdf_path)
+        loop = asyncio.get_running_loop()
+    
+        # 检查 lessonId 是否存在
+        if lessonId not in self.lessonIdDict:
+            self.msgmgr.sendMsg(f"无效的课程序号: {lessonId}")
+            return
+    
+        # 清空文件夹
+        try:
+            await loop.run_in_executor(None, clear_folder, folder_path)
+        except Exception as e:
+            self.msgmgr.sendMsg(f"清空文件夹失败: {str(e)}")
+            return
+    
+        # 下载图片
+        try:
+            await loop.run_in_executor(None, download_images_to_folder, slides, folder_path)
+        except Exception as e:
+            self.msgmgr.sendMsg(f"下载图片失败: {str(e)}")
+            return
+    
+        # 生成 PDF 文件名并清理非法字符
+        classroom_name = re.sub(r'[\\/*?:"<>|]', '_', self.lessonIdDict[lessonId]['classroomName'])
+        title = re.sub(r'[\\/*?:"<>|]', '_', self.lessonIdDict[lessonId]['title'])
+        output_pdf_path = os.path.join(
+            folder_path,
+            f"{classroom_name}-{title}.pdf"
+        )
+    
+        # 生成 PDF
+        try:
+            await loop.run_in_executor(None, images_to_pdf, folder_path, output_pdf_path)
+        except Exception as e:
+            self.msgmgr.sendMsg(f"生成 PDF 失败: {str(e)}")
+            return
+    
+        # 最终检查文件是否存在
         if os.path.exists(output_pdf_path):
             self.msgmgr.sendFile(output_pdf_path)
         else:
-            self.msgmgr.sendMsg(f"PPT下载失败：未找到文件")
+            self.msgmgr.sendMsg(f"PPT 下载失败：未找到文件")
 
     async def answer(self, lessonId):
+        # 缓存 lesson_info 到局部变量，减少重复字典访问
+        lesson_info = self.lessonIdDict.get(lessonId)
+        if not lesson_info:
+            return
+
+        try:
+            problem_id = lesson_info['problemId']
+            problem = lesson_info['problems'][problem_id]
+        except KeyError as e:
+            self.msgmgr.sendMsg(f"Missing key {e} in lessonIdDict for lesson {lessonId}")
+            return
+
+        # 安全性：确保 domain、cookie、Authorization 的存在性
+        domain = self.domain  # 确保使用类属性 domain
+        cookie = lesson_info.get('cookie', '')
+        authorization = lesson_info.get('Authorization', '')
+
         url = f"https://{domain}/api/v3/lesson/problem/answer"
         headers = {
             "referer": f"https://{domain}/lesson/fullscreen/v3/{lessonId}?source=5",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-            "cookie": self.cookie,
+            "cookie": cookie,
             "Content-Type": "application/json",
-            "Authorization": self.lessonIdDict[lessonId]['Authorization']
+            "Authorization": authorization
         }
 
         data = {
             "dt": int(time.time() * 1000),
-            "problemId": self.lessonIdDict[lessonId]['problemId'],
-            "problemType": self.lessonIdDict[lessonId]['problems'][self.lessonIdDict[lessonId]['problemId']][
-                'problemType'],
-            "result": self.lessonIdDict[lessonId]['problems'][self.lessonIdDict[lessonId]['problemId']]['answers']
+            "problemId": problem_id,
+            "problemType": problem.get('problemType'),
+            "result": problem.get('answers', [])
         }
-        try:
-            res = requests.post(url=url, headers=headers, json=data, timeout=timeout)
-        except Exception as e:
-            return
-        self.setAuthorization(res, lessonId)
-        self.msgmgr.sendMsg(
-            f"{self.lessonIdDict[lessonId]['header']}\nPPT: 第{self.lessonIdDict[lessonId]['problems'][self.lessonIdDict[lessonId]['problemId']]['index']}页\n问题: {self.lessonIdDict[lessonId]['problems'][self.lessonIdDict[lessonId]['problemId']]['body']}\n提交答案: {self.lessonIdDict[lessonId]['problems'][self.lessonIdDict[lessonId]['problemId']]['answers']}")
 
+        try:
+            # 使用具体异常捕获并记录错误
+            res = requests.post(url=url, headers=headers, json=data, timeout=self.timeout)
+        except requests.exceptions.RequestException as e:
+            self.msgmgr.sendMsg(f"Request failed for lesson {lessonId}: {str(e)}")
+            return
+
+        self.setAuthorization(res, lessonId)
+        # 使用 get() 避免 KeyError
+        self.msgmgr.sendMsg(
+            f"{lesson_info.get('header', 'No header')}\n"
+            f"PPT: 第{problem.get('index', 'N/A')}页\n"
+            f"问题: {problem.get('body', 'N/A')}\n"
+            f"提交答案: {problem.get('answers', 'N/A')}"
+        )
+
+    # WebSocket连接重试限制
     async def ws_controller(self, func, *args, retries=3, delay=10):
         attempt = 0
+        last_exception = None
         while attempt <= retries:
             try:
                 await func(*args)
-                return  # 如果成功就直接返回
-            except Exception as e:
-                print(traceback.format_exc())
+                return
+            except (ConnectionError, TimeoutError) as e:  # 仅捕获预期异常
+                last_exception = e
                 attempt += 1
                 if attempt <= retries:
                     await asyncio.sleep(delay)
-                    print(f"出现异常, 尝试重试 ({attempt}/{retries})")
+                    logging.info(f"出现异常，尝试重试 ({attempt}/{retries})")
+        # 所有重试失败后抛出异常
+        if last_exception:
+            raise last_exception
+        else:
+            raise RuntimeError("未捕获到异常但重试失败")
 
-    # WebSocket请求登录二维码
+    # WebSocket请求二维码
     async def ws_login(self):
         uri = f"wss://{domain}/wsapp/"
         async with websockets.connect(uri, ping_timeout=180, ping_interval=5) as websocket:
-            # 发送 "hello" 消息以建立连接
             hello_message = {
                 "op": "requestlogin",
                 "role": "web",
@@ -438,91 +530,175 @@ class yuketang:
             }
             await websocket.send(json.dumps(hello_message))
             server_response = await recv_json(websocket)
-            qrcode_url = server_response['ticket']  # 服务器响应中返回一个 ticket 字段，该字段是二维码图片的 URL
-            download_qrcode(qrcode_url, self.name)  # 通过 download_qrcode 函数下载二维码图片并保存为本地文件
-            self.msgmgr.sendImage(f"{self.name}qrcode.jpg")  # 发送二维码图片
-            # 扫码触发服务器回调，服务器返回的 UserID 和 Auth 用于后续的登录验证
+            qrcode_url = server_response['ticket']
+            download_qrcode(qrcode_url, self.name)
+            self.msgmgr.sendImage(f"{self.name}qrcode.jpg")
             server_response = await asyncio.wait_for(recv_json(websocket), timeout=60)
             self.weblogin(server_response['UserID'], server_response['Auth'])
 
+    # 标记问题是否提前结束
     async def countdown(self, limit):
         try:
-            # 等待 limit 秒，或者事件被触发以取消倒计时
             await asyncio.wait_for(self.stop_event.wait(), timeout=limit)
         except asyncio.TimeoutError:
-            # 超时表示 limit 时间到了，倒计时正常结束
             self.stop_event.set()
-            self.msgmgr.sendMsg(f"问题正常结束")
+            try:
+                self.msgmgr.sendMsg(f"问题正常结束")
+            except:
+                pass
+        except asyncio.CancelledError:
+            self.stop_event.set()
+            try:
+                self.msgmgr.sendMsg(f"问题已提前结束")
+            except:
+                pass
+            raise
         else:
-            # 如果事件触发，表示提前结束
-            self.msgmgr.sendMsg(f"问题已提前结束")
+            try:
+                self.msgmgr.sendMsg(f"问题已提前结束")
+            except:
+                pass
 
     async def listen_for_problemfinished(self, lessonId, limit):
-        # 监听 problemfinished 的消息
+        # 参数验证：确保limit为正数
+        if limit <= 0:
+            raise ValueError("limit must be a positive number")
+        
+        # 检查lessonId是否存在且包含有效的websocket
+        lesson_info = self.lessonIdDict.get(lessonId)
+        if not lesson_info or 'websocket' not in lesson_info:
+            self.msgmgr.sendMsg(f"Lesson ID {lessonId} not found or missing websocket")
+            self.stop_event.set()
+            return
+        
+        websocket = lesson_info['websocket']
+        
         while not self.stop_event.is_set():
             try:
-                server_response = await asyncio.wait_for(recv_json(self.lessonIdDict[lessonId]['websocket']),
-                                                         timeout=limit)
-                if server_response['op'] == "problemfinished":
+                server_response = await asyncio.wait_for(recv_json(websocket), timeout=limit)
+                # 检查'op'键是否存在
+                if 'op' in server_response and server_response['op'] == "problemfinished":
                     self.stop_event.set()
                     break
             except asyncio.TimeoutError:
+                self.stop_event.set()
                 break
-            except Exception as e:
-                self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 连接断开")
+            except (ConnectionError, ConnectionClosed) as e:
+                self.msgmgr.sendMsg(f"{lesson_info['header'] if lesson_info else ''}\n消息: 连接断开 - {str(e)}")
+                self.stop_event.set()
                 break
 
     async def receive_messages(self, lessonId):
         await self.pull_probleminfo(lessonId)
         while not self.stop_event.is_set():
             try:
-                server_response = await recv_json(self.lessonIdDict[lessonId]['websocket'])
-            except Exception as e:
-                self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 连接断开")
+                # 提取键值检查并捕获KeyError
+                lesson_info = self.lessonIdDict.get(lessonId)
+                if not lesson_info:
+                    raise KeyError(f"无法找到对应的WebSocket连接: {lessonId}")
+                websocket = lesson_info['websocket']
+                
+                server_response = await recv_json(websocket)
+            except (KeyError, ConnectionError, json.JSONDecodeError) as e:
+                self.msgmgr.sendMsg(f"{lesson_info['header'] if lesson_info else ''}\n消息: 连接断开或响应解析失败")
                 break
-            op = server_response['op']
+            except Exception as e:
+                # 捕获其他异常但保留原意
+                self.msgmgr.sendMsg(f"未知错误: {str(e)}")
+                break
+                
+            op = server_response.get('op')
             if op == "probleminfo":
-                limit = server_response.get('limit')  # 检查是否有 limit 值
-                if limit is not None and limit > 0:
+                limit = server_response.get('limit')
+                # 验证limit类型和有效性
+                if isinstance(limit, int) and limit > 0:
                     self.msgmgr.sendMsg(f"问题开始，倒计时 {limit} 秒")
-                    await asyncio.gather(
-                        self.countdown(limit),  # 倒计时任务
-                        self.listen_for_problemfinished(lessonId, limit)  # 监听 "problemfinished" 任务
-                    )
-                    break
+                    # 处理子任务异常并等待完成
+                    try:
+                        await asyncio.gather(
+                            self.countdown(limit),
+                            self.listen_for_problemfinished(lessonId, limit),
+                            return_exceptions=True  # 捕获子任务异常
+                        )
+                    except Exception as e:
+                        self.msgmgr.sendMsg(f"任务执行失败: {str(e)}")
+                    finally:
+                        break  # 无论是否异常均退出循环
                 else:
-                    self.msgmgr.sendMsg(f"问题无倒计时")
-            if op == "problemfinished":
+                    self.msgmgr.sendMsg(f"问题无倒计时或limit无效")
+            elif op == "problemfinished":
                 self.stop_event.set()
                 self.msgmgr.sendMsg(f"问题已结束")
                 break
 
     async def fetch_answers(self, lessonId):
         while not self.stop_event.is_set():
-            # 获取幻灯片信息，处理可能的异常
-            self.fetch_problems(lessonId)
+            try:
+                # 获取幻灯片信息，处理可能的异常
+                self.fetch_problems(lessonId)
+            except Exception as e:
+                print(f"Error fetching problems: {e}")
+                await asyncio.sleep(2)
+                continue  # 继续循环
+            
+            # 缓存lesson_dict，避免重复访问字典
+            lesson_dict = self.lessonIdDict.get(lessonId)
+            if not lesson_dict:
+                await asyncio.sleep(2)
+                continue
+            
+            # 获取当前问题ID并校验有效性
+            current_problem_id = lesson_dict.get('problemId')
+            if current_problem_id is None:
+                await asyncio.sleep(2)
+                continue
+            
+            # 获取问题列表并校验索引范围
+            problems = lesson_dict.get('problems', [])
+            if current_problem_id < 0 or current_problem_id >= len(problems):
+                await asyncio.sleep(2)
+                continue
+            
+            current_problem = problems[current_problem_id]
+            answers = current_problem.get('answers')
+            
+            if answers:
+                try:
+                    await self.answer(lessonId)
+                except Exception as e:
+                    print(f"Error submitting answer: {e}")
+                finally:
+                    self.stop_event.set()
+                    break  # 提交答案后退出循环
+            
             await asyncio.sleep(2)
 
-            # 检查当前问题的答案是否存在，如果存在则提交
-            if self.lessonIdDict[lessonId]['problems'][self.lessonIdDict[lessonId]['problemId']].get('answers'):
-                await self.answer(lessonId)
-                self.stop_event.set()
-                break  # 提交答案后退出循环
-
     async def pull_probleminfo(self, lessonId):
-        # 构造要发送的消息
+        try:
+            lesson_dict = self.lessonIdDict[lessonId]
+        except KeyError:
+            raise KeyError(f"Lesson ID {lessonId} not found")
+        
+        # 构造消息
         probleminfo_message = {
             "op": "probleminfo",
             "lessonid": lessonId,
-            "problemid": self.lessonIdDict[lessonId]['problemId'],
-            "msgid": self.lessonIdDict[lessonId]['msgid']
+            "problemid": lesson_dict['problemId'],
+            "msgid": lesson_dict['msgid']
         }
-
-        # 发送消息到 WebSocket
-        await self.lessonIdDict[lessonId]['websocket'].send(json.dumps(probleminfo_message))
-        # 递增 msgid，确保每条消息的唯一性
-        self.lessonIdDict[lessonId]['msgid'] += 1
-
+    
+        # 发送消息并捕获异常
+        try:
+            await lesson_dict['websocket'].send(json.dumps(probleminfo_message))
+        except websockets.exceptions.ConnectionClosed as e:
+            # 根据需求处理异常（如记录日志或重连）
+            logging.error(f"WebSocket closed for lesson {lessonId}: {e}")
+    
+        # 使用锁保护msgid自增操作
+        async with self.lock:
+            current_msgid = lesson_dict['msgid']
+            lesson_dict['msgid'] = current_msgid + 1
+    # 核心方法
     async def ws_lesson(self, lessonId):
         flag_ppt = 1
         flag_si = 1
