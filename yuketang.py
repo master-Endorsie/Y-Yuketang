@@ -1,3 +1,6 @@
+import logging
+from util import logger
+
 import asyncio
 import websockets
 import json
@@ -29,10 +32,6 @@ class yuketang:
         self.cookie_time=''
         self.lessonIdNewList=[]
         self.lessonIdDict = {}
-        self.classroomCodeList = yt_config['classroomCodeList']
-        self.classroomWhiteList = yt_config['classroomWhiteList']
-        self.clashroomBlackList = yt_config['clashroomBlackList']
-        self.clashroomStartTimeDict = yt_config['clashroomStartTimeDict']
         self.wx = yt_config['wx']
         self.dd = yt_config['dd']
         self.fs = yt_config['fs']
@@ -40,53 +39,62 @@ class yuketang:
         self.ppt = yt_config['ppt']
         self.si = yt_config['si']
         self.msgmgr=SendManager(openId=self.openId,wx=self.wx,dd=self.dd,fs=self.fs)
-
+    
     async def getcookie(self):
-        flag = 0
-        def read_cookie():
-            with open(f"{self.name}cookie", "r") as f:
-                lines = f.readlines()
-            self.cookie = lines[0].strip()
-            if len(lines) >= 2:
-                self.cookie_time = convert_date(int(lines[1].strip()))
-            else:
-                self.cookie_time = ''
         while True:
+            flag = 0
             if not os.path.exists(f"{self.name}cookie"):
                 flag = 1
                 self.msgmgr.sendMsg("正在第一次获取登录cookie, 请微信扫码")
                 await self.ws_controller(self.ws_login, retries=1000, delay=1)
             if not self.cookie:
                 flag = 1
-                read_cookie()
+                self.read_cookie()
             if self.cookie_time and not check_time(self.cookie_time, 0):
                 flag = 1
                 self.msgmgr.sendMsg(f"cookie已失效, 请重新扫码")
                 await self.ws_controller(self.ws_login, retries=1000, delay=1)
-                read_cookie()
+                self.read_cookie()
                 continue
             elif self.cookie_time and (not check_time(self.cookie_time, 2880) and datetime.now().minute < 5 or not check_time(self.cookie_time, 120)):
                 flag = 1
                 self.msgmgr.sendMsg(f"cookie有效至{self.cookie_time}, 即将失效, 请重新扫码")
                 await self.ws_controller(self.ws_login, retries=0, delay=1)
-                read_cookie()
+                self.read_cookie()
                 continue
             code = self.check_cookie()
             if code == 1:
                 flag = 1
                 self.msgmgr.sendMsg(f"cookie已失效, 请重新扫码")
                 await self.ws_controller(self.ws_login, retries=1000, delay=1)
-                read_cookie()
+                self.read_cookie()
             elif code == 2:
                 self.msgmgr.sendMsg(f"检测cookie有效性失败")
             else:
-                if self.cookie_time and flag == 1 and check_time(self.cookie_time, 2880):
-                    self.msgmgr.sendMsg(f"cookie有效至{self.cookie_time}")
-                elif self.cookie_time and flag == 1:
-                    self.msgmgr.sendMsg(f"cookie有效至{self.cookie_time}, 即将失效, 下个小时初注意扫码")
+                if flag == 1 and check_time(self.cookie_time, 2880):
+                    current_time = datetime.now(tz)
+                    expire_time = datetime.strptime(self.cookie_time, "%Y年%m月%d日%H时%M分%S秒").replace(tzinfo=tz)
+                    remaining = expire_time - current_time
+                    days = remaining.days
+                    hours, remainder = divmod(remaining.seconds, 3600)
+                    minutes, _ = divmod(remainder, 60)
+                    msg = f"cookie将在{days}天{hours}小时后失效" if days > 0 else f"cookie将在{hours}小时{minutes}分钟后失效"
+                    self.msgmgr.sendMsg(msg)
                 elif flag == 1:
                     self.msgmgr.sendMsg(f"cookie有效, 有效期未知")
                 break
+            # 只在需要获取时记录日志
+            if flag == 1:
+                logger.info("开始获取Cookie")
+
+    def read_cookie(self):
+        with open(f"{self.name}cookie", "r") as f:
+            lines = f.readlines()
+        self.cookie = lines[0].strip()
+        if len(lines) >= 2:
+            self.cookie_time = convert_date(int(lines[1].strip()))
+        else:
+            self.cookie_time = ''
 
     def weblogin(self,UserID,Auth):
         url=f"https://{domain}/pc/web_login"
@@ -102,7 +110,7 @@ class yuketang:
         try:
             res=requests.post(url=url,headers=headers,json=data,timeout=timeout)
         except Exception as e:
-            print(f"登录失败: {e}")
+            logger.error(f"登录失败: {e}")
             return
         cookies = res.cookies
         self.cookie=""
@@ -124,34 +132,10 @@ class yuketang:
         if info.get("code")==0:
             return 0
         return 1
-    
+
     def setAuthorization(self,res,lessonId):
         if res.headers.get("Set-Auth") is not None:
             self.lessonIdDict[lessonId]['Authorization']="Bearer "+res.headers.get("Set-Auth")
-
-    def join_classroom(self):
-        url=f"https://{domain}/v/course_meta/join_classroom"
-        headers={
-            "cookie":self.cookie,
-            "x-csrftoken":self.cookie.split("csrftoken=")[1].split(";")[0],
-            "Content-Type":"application/json"
-        }
-        classroomCodeList_del = []
-        for classroomCode in self.classroomCodeList:
-            data={"id":classroomCode}
-            try:
-                res=requests.post(url=url,headers=headers,json=data,timeout=timeout)
-            except Exception as e:
-                return
-            if res.json().get("success", False) == True:
-                self.msgmgr.sendMsg(f"班级邀请码/课堂暗号{classroomCode}使用成功")
-                classroomCodeList_del.append(classroomCode)
-            elif "班级邀请码或课堂暗号不存在" in res.json().get("msg", ""):
-                self.msgmgr.sendMsg(f"班级邀请码/课堂暗号{classroomCode}不存在")
-                classroomCodeList_del.append(classroomCode)
-            # else:
-            #    self.msgmgr.sendMsg(f"班级邀请码/课堂暗号{classroomCode}使用失败")
-        self.classroomCodeList = list(set(self.classroomCodeList) - set(classroomCodeList_del))
 
     def get_basicinfo(self):
         url=f"https://{domain}/api/v3/user/basic-info"
@@ -182,10 +166,10 @@ class yuketang:
         classroomName = self.lessonIdDict[lessonId]['classroomName']
         try:
             self.lessonIdDict[lessonId]['title'] = res.json()['data']['title']
-            self.lessonIdDict[lessonId]['header'] = f"课程: {classroomName}\n标题: {self.lessonIdDict[lessonId]['title']}\n教师: {res.json()['data']['teacher']['name']}\n开始时间: {convert_date(res.json()['data']['startTime'])}"
+            self.lessonIdDict[lessonId]['header'] = f"课程: {classroomName} 标题: {self.lessonIdDict[lessonId]['title']} 教师: {res.json()['data']['teacher']['name']} 开始时间: {convert_date(res.json()['data']['startTime'])}"
         except Exception as e:
             self.lessonIdDict[lessonId]['title'] = '未知标题'
-            self.lessonIdDict[lessonId]['header'] = f"课程: {classroomName}\n标题: 获取失败\n教师: 获取失败\n开始时间: 获取失败"
+            self.lessonIdDict[lessonId]['header'] = f"课程: {classroomName} 标题: 获取失败 教师: 获取失败 开始时间: 获取失败"
 
     def getlesson(self):
         url=f"https://{domain}/api/v3/classroom/on-lesson-upcoming-exam"
@@ -206,8 +190,6 @@ class yuketang:
                 self.lessonIdDict = {}
                 return False
             for item in online_data['data']['onLessonClassrooms']:
-                if (self.classroomWhiteList and item['courseName'] not in self.classroomWhiteList) or item['courseName'] in self.clashroomBlackList or (self.clashroomStartTimeDict and item['courseName'] in self.clashroomStartTimeDict and not check_time2(self.clashroomStartTimeDict[item['courseName']])):
-                    continue
                 lessonId = item['lessonId']
                 if lessonId not in self.lessonIdDict:
                     self.lessonIdNewList.append(lessonId)
@@ -260,7 +242,7 @@ class yuketang:
                 self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 课程已结束")
             else:
                 self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 签到失败")
-    
+
     def fetch_problems(self, lessonId):
         url = f"https://{domain}/api/v3/lesson/presentation/fetch?presentation_id={self.lessonIdDict[lessonId]['presentation']}"
         headers = {
@@ -275,9 +257,9 @@ class yuketang:
         slides=info['data']['slides']    #获得幻灯片列表
         for slide in slides:
             if slide['id'] == self.lessonIdDict[lessonId]['problemId']:
-                if slide.get("problem") is not None:  
+                if slide.get("problem") is not None:
                     self.lessonIdDict[lessonId]['problems'][slide['id']]=slide['problem']
-                    self.lessonIdDict[lessonId]['problems'][slide['id']]['index']=slide['index'] 
+                    self.lessonIdDict[lessonId]['problems'][slide['id']]['index']=slide['index']
                     if slide['problem']['body'] == '':
                         shapes = slide.get('shapes', [])
                         if shapes:
@@ -288,14 +270,14 @@ class yuketang:
                                 self.lessonIdDict[lessonId]['problems'][slide['id']]['body'] = '未知问题'
                         else:
                             self.lessonIdDict[lessonId]['problems'][slide['id']]['body'] = '未知问题'
-                            
-                    shared_answer = yuketang.shared_answers.get(slide['id'])     
+
+                    shared_answer = yuketang.shared_answers.get(slide['id'])
                     if shared_answer is not None:
                         self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] = shared_answer
                         self.msgmgr.sendMsg(f"问题: {self.lessonIdDict[lessonId]['problems'][slide['id']]['body']}\n检测到共享答案: {shared_answer}")
                         # 跳过后续逻辑，直接使用共享答案
-                        break   
-    
+                        break
+
                     if self.lessonIdDict[lessonId]['problems'][slide['id']]['problemType'] == 5:
                         if self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] in [[],None,'null'] and not self.lessonIdDict[lessonId]['problems'][slide['id']]['result'] in [[],None,'null']:
                             yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']]['result']
@@ -306,9 +288,9 @@ class yuketang:
                         num_blanks = len(self.lessonIdDict[lessonId]['problems'][slide['id']]['blanks'])
                         if not check_answers_in_blanks(self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'], num_blanks):
                             if check_answers_in_blanks(self.lessonIdDict[lessonId]['problems'][slide['id']]['result'], num_blanks):
-                                yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']]['result']   
-                                self.msgmgr.sendMsg(f"问题: {self.lessonIdDict[lessonId]['problems'][slide['id']]['body']}\n答案:{yuketang.shared_answers[slide['id']]}已提交到共享区")  
-                                self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] = yuketang.shared_answers[slide['id']]      
+                                yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']]['result']
+                                self.msgmgr.sendMsg(f"问题: {self.lessonIdDict[lessonId]['problems'][slide['id']]['body']}\n答案:{yuketang.shared_answers[slide['id']]}已提交到共享区")
+                                self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] = yuketang.shared_answers[slide['id']]
                                 break
                     else:
                         if not check_answers_in_options(self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'], self.lessonIdDict[lessonId]['problems'][slide['id']]['options']) and check_answers_in_options(self.lessonIdDict[lessonId]['problems'][slide['id']]['result'], self.lessonIdDict[lessonId]['problems'][slide['id']]['options']):
@@ -316,7 +298,7 @@ class yuketang:
                             self.msgmgr.sendMsg(f"问题: {self.lessonIdDict[lessonId]['problems'][slide['id']]['body']}\n答案:{yuketang.shared_answers[slide['id']]}已提交到共享区")
                             self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] = yuketang.shared_answers[slide['id']]
                             break
- 
+
 
     def fetch_presentation(self, lessonId):
         url = f"https://{domain}/api/v3/lesson/presentation/fetch?presentation_id={self.lessonIdDict[lessonId]['presentation']}"
@@ -346,7 +328,7 @@ class yuketang:
                             self.lessonIdDict[lessonId]['problems'][slide['id']]['body'] = '未知问题'
                     else:
                         self.lessonIdDict[lessonId]['problems'][slide['id']]['body'] = '未知问题'
-                        
+
                 if self.lessonIdDict[lessonId]['problems'][slide['id']]['problemType'] == 5:
                     if self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'] in [[],None,'null'] and not self.lessonIdDict[lessonId]['problems'][slide['id']]['result'] in [[],None,'null']:
                         yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']]['result']
@@ -354,17 +336,17 @@ class yuketang:
                     num_blanks = len(self.lessonIdDict[lessonId]['problems'][slide['id']]['blanks'])
                     if not check_answers_in_blanks(self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'], num_blanks):
                         if check_answers_in_blanks(self.lessonIdDict[lessonId]['problems'][slide['id']]['result'], num_blanks):
-                            yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']]['result']         
+                            yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']]['result']
                 else:
                     if not check_answers_in_options(self.lessonIdDict[lessonId]['problems'][slide['id']]['answers'], self.lessonIdDict[lessonId]['problems'][slide['id']]['options']) and check_answers_in_options(self.lessonIdDict[lessonId]['problems'][slide['id']]['result'], self.lessonIdDict[lessonId]['problems'][slide['id']]['options']) and not self.lessonIdDict[lessonId]['problems'][slide['id']]['result'] in [[],None,'null']:
                         yuketang.shared_answers[slide['id']] = self.lessonIdDict[lessonId]['problems'][slide['id']]['result']
         if self.lessonIdDict[lessonId]['problems']=={}:
-            self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n问题列表: 无")
+            self.msgmgr.sendMsg("问题列表: 无")
         else:
-            self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n{format_json_to_text(self.lessonIdDict[lessonId]['problems'], self.lessonIdDict[lessonId].get('unlockedproblem', []))}")
+            self.msgmgr.sendMsg(format_json_to_text(self.lessonIdDict[lessonId]['problems'], self.lessonIdDict[lessonId].get('unlockedproblem', [])))
         folder_path=lessonId
 
-        
+
         async def fetch_presentation_background():
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, clear_folder, folder_path)
@@ -435,7 +417,7 @@ class yuketang:
             self.msgmgr.sendImage(f"{self.name}qrcode.jpg")
             server_response = await asyncio.wait_for(recv_json(websocket),timeout=60)
             self.weblogin(server_response['UserID'],server_response['Auth'])
-            
+
     async def countdown(self, limit):
             try:
                 # 等待 limit 秒，或者事件被触发以取消倒计时
@@ -447,7 +429,7 @@ class yuketang:
             else:
                 # 如果事件触发，表示提前结束
                 self.msgmgr.sendMsg(f"问题已提前结束")
-        
+
     async def listen_for_problemfinished(self, lessonId, limit):
     # 监听 problemfinished 的消息
         while not self.stop_event.is_set():
@@ -461,7 +443,7 @@ class yuketang:
             except Exception as e:
                 self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 连接断开")
                 break
-            
+
     async def receive_messages(self,lessonId):
         await self.pull_probleminfo(lessonId)
         while not self.stop_event.is_set():
@@ -486,7 +468,7 @@ class yuketang:
                 self.stop_event.set()
                 self.msgmgr.sendMsg(f"问题已结束")
                 break
-            
+
     async def fetch_answers(self, lessonId):
          while not self.stop_event.is_set():
          # 获取幻灯片信息，处理可能的异常
@@ -498,7 +480,7 @@ class yuketang:
                 await self.answer(lessonId)
                 self.stop_event.set()
                 break  # 提交答案后退出循环
-            
+
     async def pull_probleminfo(self, lessonId):
         # 构造要发送的消息
         probleminfo_message = {
@@ -507,13 +489,13 @@ class yuketang:
             "problemid": self.lessonIdDict[lessonId]['problemId'],
             "msgid": self.lessonIdDict[lessonId]['msgid']
         }
-        
+
         # 发送消息到 WebSocket
         await self.lessonIdDict[lessonId]['websocket'].send(json.dumps(probleminfo_message))
         # 递增 msgid，确保每条消息的唯一性
         self.lessonIdDict[lessonId]['msgid'] += 1
-        
-                 
+
+
 
     async def ws_lesson(self,lessonId):
         flag_ppt=1
@@ -613,7 +595,7 @@ class yuketang:
                         if flag_ppt==1 and self.lessonIdDict[lessonId].get('presentation') is not None:
                             flag_ppt=0
                             self.fetch_presentation(lessonId)
-                        
+
                         try:
                             await asyncio.wait_for(
                                 asyncio.gather(
@@ -626,7 +608,7 @@ class yuketang:
                             # 处理超时的情况，例如记录日志或者通知用户
                             self.msgmgr.sendMsg(f"问题超时已取消")
                         self.stop_event.clear()
-                        
+
                 elif op=="lessonfinished":
                     self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 下课了")
                     break
@@ -634,7 +616,7 @@ class yuketang:
                     flag_ppt=0
                     self.fetch_presentation(lessonId)
                 if flag_si==1 and self.lessonIdDict[lessonId].get('si') is not None and self.lessonIdDict[lessonId].get('covers') is not None and self.lessonIdDict[lessonId]['si'] in self.lessonIdDict[lessonId]['covers']:
-                    self.msgmgr.sendMsg(f"{self.lessonIdDict[lessonId]['header']}\n消息: 正在播放PPT第{self.lessonIdDict[lessonId]['si']}页")
+                    self.msgmgr.sendMsg(f"消息: 正在播放PPT第{self.lessonIdDict[lessonId]['si']}页")
                     if self.si:
                         del self.lessonIdDict[lessonId]['si']
                     else:

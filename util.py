@@ -4,11 +4,38 @@ import os
 import re
 import shutil
 import qrcode
+import logging
 from PIL import Image
 from pyzbar.pyzbar import decode
 from datetime import datetime, timedelta
 from pytz import timezone
 from concurrent.futures import ThreadPoolExecutor
+
+# 创建日志记录器
+logger = logging.getLogger('Y-Yuketang')
+logger.setLevel(logging.INFO)  # 调整默认日志级别
+
+# 创建文件处理器
+file_handler = logging.FileHandler('Y-Yuketang.log', encoding='utf-8')
+file_handler.setLevel(logging.DEBUG)
+
+# 添加控制台处理器（输出到命令行）
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+
+# 设置日志格式
+formatter_file = logging.Formatter(
+    '%(asctime)s - %(levelname)s - %(module)s.%(funcName)s - %(message)s'
+)
+file_handler.setFormatter(formatter_file)
+
+# 控制台处理器仅显示简洁消息
+console_formatter = logging.Formatter('%(message)s')
+console_handler.setFormatter(console_formatter)
+
+# 添加处理器
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(current_dir)
@@ -24,11 +51,11 @@ def download_qrcode(url, name):
     try:
         res=requests.get(url, timeout=timeout)
     except Exception as e:
-        print(f"下载登录二维码时发生错误: {e}")
+        logger.error(f"下载登录二维码时发生错误: {e}")
         return
     with open(f"{name}qrcode.jpg","wb") as f:
         f.write(res.content)
-    print(f"登录二维码已保存为{name}qrcode.jpg")
+    logger.info(f"登录二维码已保存为{name}qrcode.jpg")
     barcode_url = ''
     barcodes = decode(Image.open(f"{name}qrcode.jpg"))
     for barcode in barcodes:
@@ -52,7 +79,7 @@ def clear_folder(folder_path):
         elif os.path.isdir(folder_path):
             shutil.rmtree(folder_path)
     except Exception as e:
-        print(f'删除 {folder_path} 时发生错误。原因: {e}')
+        logger.error(f'删除 {folder_path} 时发生错误。原因: {e}')
     os.makedirs(folder_path)
 
 def download_image(item, folder):
@@ -61,7 +88,7 @@ def download_image(item, folder):
     try:
         response = requests.get(item['cover'], timeout=timeout)
     except Exception as e:
-        print(f"下载图片 {item['index']} 时发生错误: {e}")
+        logger.error(f"下载图片 {item['index']} 时发生错误: {e}")
         return
     if response.status_code == 200:
         file_path = os.path.join(folder, f"{item['index']}.jpg")
@@ -75,19 +102,19 @@ def download_images_to_folder(slides, folder):
 
 def images_to_pdf(folder, output_path):
     if not os.path.exists(folder):
-        print(f'文件夹 {folder} 不存在')
+        logger.error(f'文件夹 {folder} 不存在')
         return
     image_files = [f for f in os.listdir(folder) if f.endswith(('.png', '.jpg', '.jpeg'))]
     if not image_files:
-        print(f'文件夹 {folder} 中没有任何图片文件')
+        logger.error(f'文件夹 {folder} 中没有任何图片文件')
         return
     image_files.sort(key=lambda x: int(x.split('.')[0]))
     images = [Image.open(os.path.join(folder, f)).convert('RGB') for f in image_files]
     if images:
         images[0].save(output_path, save_all=True, append_images=images[1:])
-        print(f'PDF文件已生成: {output_path}')
+        logger.info(f'PDF文件已生成: {output_path}')
     else:
-        print("没有找到任何图片文件")
+        logger.error("没有找到任何图片文件")
     images[0].save(output_path, save_all=True, append_images=images[1:])
 
 def convert_date(timestamp_ms):
@@ -150,6 +177,5 @@ def check_answers_in_blanks(answers, blanks):
 
 async def recv_json(websocket):
     server_response = await websocket.recv()
-    # print(f"Received from server: {server_response}")
     info=json.loads(server_response)
     return info

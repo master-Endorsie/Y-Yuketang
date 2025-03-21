@@ -3,15 +3,27 @@ import asyncio
 import json
 import os
 from yuketang import ykt_user
+from util import logger  # 新增导入语句
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(current_dir)
 with open('config.json', 'r', encoding='utf-8') as f:
     user_data = json.load(f)
 
+
+async def ykt_user(ykt):
+    while True:
+        await ykt.getcookie()
+        if ykt.getlesson():
+            ykt.lesson_checkin()
+            await ykt.lesson_attend()
+        await asyncio.sleep(30)
+
+
 class UserManager:
     def __init__(self):
-        self.users = {}  # 存储用户的会话
+        logger.info("用户管理器初始化")
+        self.users = {}
         self.load_users()
 
     def load_users(self):
@@ -22,16 +34,8 @@ class UserManager:
             self.users[name] = yuketang.yuketang(name, openId)
             
     async def start_users(self):
-        """为每个用户启动 ykt_user 异步任务"""
+        logger.info("启动所有用户任务")
         tasks = []
         for name in self.users:
-            # 从 self.users 字典中获取每个用户的 Yuketang 实例
-            ykt_instance = self.users[name]
-            # 为每个用户创建一个异步任务，调用 ykt_user 函数
-            tasks.append(asyncio.create_task(ykt_user(ykt_instance)))
-        
-        # 并行执行所有任务
+            tasks.append(asyncio.create_task(ykt_user(self.users[name])))
         await asyncio.gather(*tasks)
-
-
-
